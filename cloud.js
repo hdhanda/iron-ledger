@@ -2,7 +2,7 @@
 (function(root){
   const L=typeof module!=='undefined'?require('./ledger-core.js'):root.Ledger;
   class LedgerCloud {
-    constructor({config,getDB,persist,changed=()=>{},isSeed=()=>false,storage=localStorage,fetcher=fetch}){
+    constructor({config,getDB,persist,changed=()=>{},isSeed=()=>false,storage=localStorage,fetcher=(...args)=>root.fetch(...args)}){
       Object.assign(this,{config,getDB,persist,changed,isSeed,storage,fetcher});
       this.authKey=config.storageKey+':auth';this.message='';this.busy=false;this.backoff=5000;
       try{this.auth=JSON.parse(storage.getItem(this.authKey)||'null')}catch{this.auth=null;}

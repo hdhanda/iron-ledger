@@ -2,6 +2,29 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const Cloud=require('../cloud.js'),L=require('../ledger-core.js');
 const config={storageKey:'test',supabaseUrl:'https://development.supabase.co',supabaseKey:'sb_publishable_test'};
 const record=(id='custom')=>({id,name:'Custom exercise',pattern:'Other',group:'Other',anchor:false,custom:true});
+test('default fetch keeps the browser Window receiver through sign-in and sync',async()=>{
+ const vm=require('node:vm'),fs=require('node:fs');
+ const context=vm.createContext({Ledger:L,AbortController,setTimeout,clearTimeout});
+ vm.runInContext(`
+   const calls=[];
+   const localStorage={getItem:()=>null,setItem:()=>{}};
+   async function fetch(url){
+     if(this!==globalThis)throw new TypeError('can only call Window.fetch on instances of Window');
+     calls.push(url);
+     const data=url.includes('/auth/v1/token')?{access_token:'test',refresh_token:'test',expires_in:3600,user:{id:'test-owner'}}:
+       url.includes('ledger_manifest')?Object.fromEntries(Ledger.tables.map(t=>[t,'0:0'])):[];
+     return {ok:true,json:async()=>data};
+   }
+ `,context);
+ vm.runInContext(fs.readFileSync(require.resolve('../cloud.js'),'utf8'),context);
+ await vm.runInContext(`(async()=>{
+   const db={exercises:[],routines:[],sessions:[],cardio:[],body:[]};
+   const client=new LedgerCloud({config:{storageKey:'test',supabaseUrl:'https://test.supabase.co',supabaseKey:'sb_publishable_test'},getDB:()=>db,persist:()=>{}});
+   client.schedule=()=>{};
+   await client.signIn('test@example.com','test-password');
+   if(calls.length!==7||client.message!=='All records confirmed by Supabase.')throw new Error('Sign-in/sync did not complete');
+ })()`,context);
+});
 function setup(){
  const db={exercises:[record()],routines:[],sessions:[],cardio:[],body:[],active:null};
  const store=new Map(),storage={getItem:k=>store.get(k),setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)};

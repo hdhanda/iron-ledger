@@ -15,6 +15,18 @@ const server=http.createServer((req,res)=>{
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
  try{
    await page.goto(`http://127.0.0.1:${server.address().port}`);
+   let authRequests=0;
+   await page.route('https://*.supabase.co/**',route=>{
+     if(route.request().url().includes('/auth/v1/token'))authRequests++;
+     return route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({message:'Test credentials rejected by server'})});
+   });
+   await page.evaluate(()=>{cloud.config.supabaseUrl='https://browser-test.supabase.co';cloud.config.supabaseKey='sb_publishable_test';});
+   await page.getByRole('button',{name:'data',exact:true}).click();
+   await page.locator('#cloudEmail').fill('test@example.com');await page.locator('#cloudPassword').fill('not-a-real-password');
+   await page.getByRole('button',{name:'Sign in',exact:true}).click();
+   await page.waitForFunction(()=>document.getElementById('toast').textContent==='Test credentials rejected by server');
+   assert.equal(authRequests,1);
+   await page.getByRole('button',{name:'train',exact:true}).click();
    await page.evaluate(()=>localStorage.setItem('ironledger','PRODUCTION-CACHE-UNCHANGED'));
    const navBottom=()=>page.locator('nav').evaluate(e=>e.getBoundingClientRect().bottom);
    assert.equal(await navBottom(),844);
