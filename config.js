@@ -3,6 +3,6 @@
 window.IRON_LEDGER_CONFIG={
   environment:'preview',
   storageKey:'ironledger-v2-preview',
-  supabaseUrl:'',
-  supabaseKey:''
+  supabaseUrl:'https://armhlqarrdzioobepcng.supabase.co',
+  supabaseKey:'sb_publishable_6FeXgfp3uMBwhCSJhiCT-w_1jHRXwR-'
 };
