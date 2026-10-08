@@ -1,0 +1,62 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const http=require('node:http'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'..');
+const allowed=new Set(['index.html','ledger-core.js','cloud.js','config.js','manifest.json','sw.js','icon-180.png','icon-192.png','icon-512.png']);
+const server=http.createServer((req,res)=>{
+ const name=new URL(req.url,'http://local').pathname.slice(1)||'index.html';
+ if(!allowed.has(name)){res.writeHead(404).end();return;}
+ const type=name.endsWith('.js')?'application/javascript':name.endsWith('.html')?'text/html':name.endsWith('.png')?'image/png':'application/json';
+ res.setHeader('Content-Type',type);res.end(fs.readFileSync(path.join(root,name)));
+});
+(async()=>{
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const browser=await chromium.launch({headless:true,...(process.env.BROWSER_PATH?{executablePath:process.env.BROWSER_PATH}:{})});
+ const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+ const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ try{
+   await page.goto(`http://127.0.0.1:${server.address().port}`);
+   await page.evaluate(()=>localStorage.setItem('ironledger','PRODUCTION-CACHE-UNCHANGED'));
+   const navBottom=()=>page.locator('nav').evaluate(e=>e.getBoundingClientRect().bottom);
+   assert.equal(await navBottom(),844);
+   await page.getByRole('button',{name:'Push',exact:true}).click();
+   await page.getByRole('button',{name:'+ Add exercise'}).click();
+   await page.evaluate(()=>{window.originalSearch=document.getElementById('q');});
+   await page.locator('#q').pressSequentially('Bench',{delay:30});
+   assert.equal(await page.evaluate(()=>document.activeElement===window.originalSearch&&document.getElementById('q')===window.originalSearch),true);
+   await page.getByRole('button',{name:'Barbell Bench Press'}).click();
+   await page.getByRole('button',{name:'Log set',exact:true}).click();
+   await page.reload();assert.equal(await page.locator('.setrow').count(),1);
+   await page.getByRole('button',{name:'Finish',exact:true}).click();
+   await page.evaluate(()=>{
+     DB.sessions=Array.from({length:65},(_,i)=>({id:'history_'+i,date:'2026-01-'+String(i%28+1).padStart(2,'0'),type:'Push',status:'completed',readiness:{sleep:3,soreness:2,stress:2},notes:'',entries:[{exId:'barbell-bench-press',sets:[{id:'set_'+i,w:100+i,r:8,rpe:8,warmup:false}]}]}));save();
+   });
+   await page.getByRole('button',{name:'progress',exact:true}).click();
+   assert.equal(await page.locator('#progressResults>.card').count(),66);
+   assert.equal(await navBottom(),844);
+   await page.getByRole('button',{name:'Exercise progression',exact:true}).click();
+   await page.locator('#progressQuery').fill('Bench');await page.locator('#progressExercise').selectOption('barbell-bench-press');
+   assert.equal(await page.locator('#progressResults details').count(),65);
+   assert.match(await page.locator('#progressResults').innerText(),/Heaviest 164 lb/);
+   await page.setViewportSize({width:390,height:490});await page.waitForFunction(()=>document.querySelector('nav').getBoundingClientRect().bottom===490);
+   await page.setViewportSize({width:390,height:844});await page.waitForFunction(()=>document.querySelector('nav').getBoundingClientRect().bottom===844);
+   fs.mkdirSync(path.join(root,'test-results'),{recursive:true});await page.screenshot({path:path.join(root,'test-results/progression.png')});
+   await page.getByRole('button',{name:'train',exact:true}).click();
+   await page.getByRole('button',{name:'Push',exact:true}).click();await page.getByRole('button',{name:'+ Add exercise'}).click();
+   await page.locator('#q').fill('Offline Custom');await page.getByRole('button',{name:'Create "Offline Custom"'}).click();
+   await page.getByRole('button',{name:'Horizontal Push',exact:true}).click();await page.getByRole('button',{name:'Add to session',exact:true}).click();
+   await page.getByRole('button',{name:'Log set',exact:true}).click();
+   await page.evaluate(()=>navigator.serviceWorker.ready);await page.reload();
+   await context.setOffline(true);await page.reload();
+   assert.match(await page.locator('#view').innerText(),/Offline Custom/);assert.equal(await page.locator('.setrow').count(),1);
+   assert.equal(await page.evaluate(()=>localStorage.getItem('ironledger')),'PRODUCTION-CACHE-UNCHANGED');
+   await context.setOffline(false);
+   await page.getByRole('button',{name:'Finish',exact:true}).click();await page.getByRole('button',{name:'train',exact:true}).click();
+   await page.getByRole('button',{name:'Log a run',exact:true}).click();await page.getByRole('button',{name:'Save run',exact:true}).click();
+   await page.getByRole('button',{name:'train',exact:true}).click();await page.getByRole('button',{name:'Log body stats',exact:true}).click();await page.getByRole('button',{name:'Save stats',exact:true}).click();
+   assert.equal(await page.evaluate(()=>DB.cardio.length),1);assert.equal(await page.evaluate(()=>DB.body.length),1);
+   await page.getByRole('button',{name:'data',exact:true}).click();
+   const downloaded=page.waitForEvent('download');await page.getByRole('button',{name:'Download full backup (JSON)'}).click();assert.match((await downloaded).suggestedFilename(),/backup/);
+   const csv=page.waitForEvent('download');await page.getByRole('button',{name:'Export sets to CSV'}).click();assert.match((await csv).suggestedFilename(),/\.csv$/);
+   assert.deepEqual(errors,[]);console.log('PASS: mobile navigation, stable search, 65-session history, offline restart, custom exercises, cardio/body, exports, production cache isolation.');
+ }finally{await browser.close();server.close();}
+})().catch(e=>{console.error(e);server.close();process.exitCode=1;});

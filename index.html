@@ -121,9 +121,12 @@ textarea.field{height:auto;min-height:72px;padding:12px 14px;resize:vertical;lin
 <div class="toast" id="toast"></div>
 
 <script src="ledger-core.js"></script>
+<script src="config.js"></script>
+<script src="cloud.js"></script>
 <script>
 /* ═══════════════════════════ CONSTANTS ═══════════════════════════ */
-const SCHEMA = 2, LS = 'ironledger';
+const SCHEMA = 2, CONFIG=window.IRON_LEDGER_CONFIG, LS=CONFIG.storageKey;
+let cloud, storageError='', otherTabChanged=false, renderedData='';
 
 const PATTERN_GROUP = {
   'Horizontal Push':'Push','Vertical Push':'Push','Chest Iso':'Push','Side Delt':'Push','Triceps':'Push',
@@ -204,11 +207,16 @@ function migrate(d){
   return d;
 }
 function load(){
-  try{const raw=localStorage.getItem(LS); DB=raw?migrate(JSON.parse(raw)):blank()}
-  catch(e){DB=blank()}
+  const raw=localStorage.getItem(LS); DB=raw?migrate(JSON.parse(raw)):blank();
+  for(const k of Ledger.tables)if(!Array.isArray(DB[k]))throw new Error('Invalid cache: '+k);
   DB.settings=Object.assign({endpoint:'',token:'',unit:'lb'},DB.settings||{});
 }
-function save(){try{localStorage.setItem(LS,JSON.stringify(DB))}catch(e){toast('Storage full — export and clear')}}
+function persist(){
+  if(otherTabChanged)throw new Error('Another tab updated this cache. Reload this tab before logging.');
+  try{localStorage.setItem(LS,JSON.stringify(DB));storageError='';}
+  catch(e){storageError='Device storage failed. Keep this app open and download a full backup now.';toast(storageError);throw e;}
+}
+function save(){persist();cloud?.schedule()}
 
 const exById=()=>Object.fromEntries(DB.exercises.map(e=>[e.id,e]));
 
@@ -238,20 +246,22 @@ function finishSession(){
   if(!a.entries.length){DB.active=null;save();render();return toast('Empty session discarded')}
   a.endedAt=Date.now(); a.entries.forEach(e=>delete e.draft);
   DB.sessions.push(a); DB.active=null; save(); tab='history'; render(true);
-  toast('Session closed. Tap Sync when you have signal.');
+  toast(cloud?.configured?'Workout saved on this device; cloud sync queued.':'Workout saved on this device. Configure Supabase in Data for cloud storage.');
 }
 
 /* ═══════════════════════════ VIEWS ═══════════════════════════ */
 function render(toTop){
   const y=$('shell').scrollTop;
   const a=DB.active;
-  $('hsub').textContent=a?`${a.type} in progress`:`${DB.sessions.length} sessions · ${unsyncedCount()} to sync`;
+  $('hsub').textContent=headerStatus();
   $('hact').innerHTML=a?'<button class="btn btn-sm btn-sig" data-a="finish">Finish</button>':'';
   $('nav').innerHTML=['train','history','progress','data']
     .map(t=>`<button data-a="tab" data-t="${t}" class="${tab===t?'on':''}">${t}</button>`).join('');
   $('view').innerHTML={train:vTrain,history:vHistory,progress:vProgress,data:vData}[tab]();
+  if(storageError)$('view').insertAdjacentHTML('afterbegin',`<div class="card pad" role="alert">${esc(storageError)}</div>`);
   // Only jump to the top when the whole screen changed. Logging a set must not move the page.
   $('shell').scrollTop=toTop===true?0:y;
+  renderedData=JSON.stringify(Ledger.tables.map(t=>DB[t]));
 }
 
 /* ---------- TRAIN ---------- */
@@ -441,9 +451,8 @@ function vProgress(){
   const seen=new Set(); DB.sessions.forEach(s=>s.entries.forEach(e=>seen.add(e.exId)));
   const anchors=DB.exercises.filter(e=>seen.has(e.id)&&e.anchor);
   const series=anchors.map(a=>{
-    const pts=DB.sessions.filter(s=>s.entries.some(e=>e.exId===a.id&&e.sets.some(x=>!x.warmup)))
-      .sort((x,y)=>x.date.localeCompare(y.date))
-      .map(s=>bestE1RM(s.entries.find(e=>e.exId===a.id).sets.filter(x=>!x.warmup)));
+    const pts=Ledger.history(DB.sessions,a.id).filter(s=>Ledger.working(Ledger.setsFor(s,a.id)).length)
+      .map(s=>Ledger.best(Ledger.setsFor(s,a.id)));
     return{name:a.name,pts};
   }).filter(s=>s.pts.length);
   const wk={};
@@ -483,10 +492,49 @@ function spark(pts){
 }
 
 /* ---------- DATA ---------- */
+function headerStatus(){
+  if(DB.active)return `${DB.active.type} in progress`;
+  const n=cloud?.summary();
+  return `${CONFIG.environment==='preview'?'Preview · ':''}${DB.sessions.length} sessions · ${cloud?.configured?(n.pending+n.failed+n.conflict)+' to sync':'device only'}`;
+}
+function cloudStatus(){
+  const n=cloud.summary();
+  return `${cloud.busy?'Syncing… ':''}${n.synced} synced · ${n.pending} pending · ${n.failed} failed · ${n.conflict} conflicts. ${cloud.message}`;
+}
+function cloudPanel(){
+  return `<div class="card pad">
+    <div class="lbl">Supabase · ${esc(CONFIG.environment)}</div>
+    <p id="cloudStatus" role="status" style="font-size:13px;line-height:1.6">${esc(cloudStatus())}</p>
+    ${!cloud.configured?'<p class="mute">Cloud storage is not configured yet. Follow SETUP.md to connect a separate development project. Until then, records are saved only on this device.</p>':cloud.auth?`
+      <p class="mute">Signed in as ${esc(cloud.auth.user.email)}</p>
+      <button class="btn btn-ok" data-a="cloudSync">Sync / retry now</button>
+      <button class="btn" style="margin-top:10px" data-a="cloudSignOut">Sign out (keep local records)</button>`:`
+      <label class="lbl" for="cloudEmail">Email</label><input id="cloudEmail" class="field" type="email" autocomplete="username">
+      <label class="lbl" for="cloudPassword">Password</label><input id="cloudPassword" class="field" type="password" autocomplete="current-password">
+      <button class="btn btn-sig" style="margin-top:10px" data-a="cloudSignIn">Sign in</button>`}
+    <button class="btn" style="margin-top:10px" data-a="cloudConflicts">Review cloud conflicts</button>
+    <details><summary>Record sync status</summary>${Ledger.tables.map(table=>`<details><summary>${esc(table)}</summary>${DB[table].map(row=>`<div style="font-size:12px;padding:5px 0">${esc(row.name||[row.date,row.type||row.id].join(' '))}: ${esc(cloud.status(table,row))}</div>`).join('')}</details>`).join('')}</details>
+    <p class="mute" style="font-size:12px">Active workouts remain on this device. Completed records retry automatically while the app is open and when you reopen it online.</p>
+  </div>`;
+}
+function openConflicts(){
+  const conflicts=Ledger.tables.flatMap(table=>Object.entries(cloud.state().meta[table]||{}).filter(([,m])=>m.status==='conflict').map(([id,m])=>({table,id,m})));
+  const sheet=$('sheet');sheet.classList.add('open');
+  sheet.innerHTML=`<div class="pad" style="overflow-y:auto"><div class="row between"><strong>Cloud conflicts</strong><button data-a="close">Close</button></div>
+    <p>Review both versions. Choosing one downloads a safety backup first. A newer cloud change will require another review.</p>
+    ${conflicts.length?conflicts.map(({table,id,m})=>{
+      const local=DB[table].find(r=>Ledger.key(table,r)===id);
+      return `<div class="card pad"><strong>${esc(table)} · ${esc(local.name||local.date||id)}</strong>
+        <details><summary>This device</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(local,null,2))}</pre></details>
+        <details><summary>Supabase</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(m.remote.data,null,2))}</pre></details>
+        ${['remote','local'].map(choice=>`<button class="btn" style="margin-top:8px" data-a="cloudResolve" data-table="${table}" data-id="${esc(id)}" data-choice="${choice}">Use ${choice==='remote'?'Supabase':'this device'} version</button>`).join('')}</div>`;
+    }).join(''):'<p>No conflicts.</p>'}</div>`;
+}
 function vData(){
   const s=DB.settings,n=unsyncedCount();
   const totalSets=DB.sessions.reduce((a,x)=>a+x.entries.reduce((b,e)=>b+e.sets.length,0),0);
   return `
+  ${cloudPanel()}
   <div class="card pad">
     <div class="lbl" style="margin-bottom:8px">The ledger</div>
     <div class="mono" style="font-size:30px">${totalSets}</div>
@@ -494,7 +542,7 @@ function vData(){
     <div class="mute" style="font-size:13px;margin-top:4px">${DB.cardio.length} runs · ${DB.body.length} weigh-ins · ${DB.exercises.length} exercises</div>
   </div>
   <div class="card pad">
-    <div class="lbl" style="margin-bottom:10px">Sync to Google Sheets</div>
+    <div class="lbl" style="margin-bottom:10px">Legacy Google Sheets archive — manual only</div>
     <div class="lbl" style="margin-bottom:5px">Apps Script /exec URL</div>
     <input class="field" style="margin-bottom:10px" data-a="set" data-k="endpoint"
       value="${esc(s.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec">
@@ -503,8 +551,7 @@ function vData(){
     <button class="btn ${n?'btn-ok':''}" data-a="sync" ${s.endpoint?'':'disabled'}>
       ${n?`Sync ${n} pending record${n>1?'s':''}`:'Nothing pending'}</button>
     <button class="btn" style="margin-top:10px" data-a="resync" ${s.endpoint?'':'disabled'}>Re-send everything</button>
-    <p class="mute" style="font-size:12px;margin:12px 0 0;line-height:1.6">Every row carries a unique id and the
-    script skips duplicates, so re-sending is always safe. Nothing is ever deleted from this phone.</p>
+    <p class="mute" style="font-size:12px;margin:12px 0 0;line-height:1.6">Optional one-way archive; Supabase is the cloud source of truth. Your Apple Health Shortcut can continue writing to the original Sheet. The supplied Apps Script does not save custom exercise definitions.</p>
   </div>
   <button class="btn btn-sig" data-a="csv">Export sets to CSV</button>
   <button class="btn" style="margin-top:10px" data-a="backup">Download full backup (JSON)</button>
@@ -567,17 +614,19 @@ async function sync(all){
   try{
     const res=await fetch(endpoint,opts); const j=await res.json();
     if(!j.ok)throw new Error(j.error||'rejected');
-    markSynced(all); toast(`Synced — ${j.written} row${j.written===1?'':'s'} written`);
+    markSynced(p); toast(`Sheet confirmed — ${j.written} row${j.written===1?'':'s'} written`);
   }catch(err){
     try{ await fetch(endpoint,{...opts,mode:'no-cors'});
-      markSynced(all); toast('Sent. Check the Sheet — re-sending is safe.');
+      toast('Sheet delivery unconfirmed. Records remain pending; check the Sheet.');
     }catch(e2){ toast('No connection. Data is safe here — try again later.') }
   }
   render();
 }
-function markSynced(all){
-  const f=x=>{if(all||!x.synced)x.synced=true};
-  DB.sessions.forEach(f);DB.cardio.forEach(f);DB.body.forEach(f);customEx().forEach(f);save();
+function markSynced(sent){
+  for(const table of ['sessions','cardio','body']){
+    const ids=new Set(sent[table].map(r=>r[0]));DB[table].forEach(r=>{if(ids.has(r.id))r.synced=true;});
+  }
+  save();
 }
 function download(name,text,type){
   const b=new Blob([text],{type});const a=document.createElement('a');
@@ -697,8 +746,20 @@ function shBody(){
 /* ═══════════════════════════ EVENTS ═══════════════════════════ */
 document.addEventListener('click',ev=>{
   const t=ev.target.closest('[data-a]'); if(!t)return;
+  if(otherTabChanged&& !['backup','csv'].includes(t.dataset.a)){ev.preventDefault();return toast(storageError);}
   const a=t.dataset.a, i=+t.dataset.i, A=DB.active;
   const acts={
+    cloudSignIn:async()=>{
+      const email=$('cloudEmail').value.trim(),password=$('cloudPassword').value;$('cloudPassword').value='';
+      try{await cloud.signIn(email,password);render();}catch(e){toast(e.message);}
+    },
+    cloudSignOut:async()=>{await cloud.signOut();render()},
+    cloudSync:async()=>{await cloud.sync();render()},
+    cloudConflicts:()=>openConflicts(),
+    cloudResolve:()=>{
+      download(`iron-ledger-before-conflict-${today()}.json`,JSON.stringify(DB,null,2),'application/json');
+      cloud.resolve(t.dataset.table,t.dataset.id,t.dataset.choice);openConflicts();
+    },
     progressMode:()=>{progress.mode=t.dataset.mode;render()},
     tab:()=>{tab=t.dataset.t;render(true)},
     start:()=>startSession(t.dataset.t,t.dataset.r||null),
@@ -724,6 +785,7 @@ document.addEventListener('click',ev=>{
     neAnchor:()=>{NEWEX.name=$('nename').value;NEWEX.anchor=!NEWEX.anchor;$('sheet').innerHTML=shNewEx()},
     neAdd:()=>{const name=$('nename').value.trim();
       if(!name||!NEWEX.pattern)return toast('Name and pattern are both needed');
+      if(DB.exercises.some(e=>e.name.toLowerCase()===name.toLowerCase()))return toast('That exercise already exists. Close and select it from search.');
       const ex={id:uid('ex'),name:name,pattern:NEWEX.pattern,
         group:PATTERN_GROUP[NEWEX.pattern]||'Other',anchor:NEWEX.anchor,custom:true};
       DB.exercises.push(ex);A.entries.push({exId:ex.id,plan:null,sets:[],draft:null});
@@ -749,6 +811,7 @@ document.addEventListener('click',ev=>{
 });
 document.addEventListener('input',ev=>{
   const t=ev.target.closest('[data-a]'); if(!t)return;
+  if(otherTabChanged)return;
   if(t.dataset.a==='in'){DB.active.entries[+t.dataset.i].draft[t.dataset.f]=+t.value||0;save()}
   if(t.dataset.a==='notes'){DB.active.notes=t.value;save()}
   if(t.dataset.a==='set'){DB.settings[t.dataset.k]=t.value.trim();save()}
@@ -775,19 +838,37 @@ document.addEventListener('change',ev=>{
     try{
       const inc=migrate(JSON.parse(r.result));
       if(!inc.exercises||!inc.sessions)throw new Error('not an Iron Ledger backup');
-      if(!confirm(`Replace everything on this phone with the backup?\n\n`
-        +`Backup: ${inc.sessions.length} sessions, ${inc.exercises.length} exercises\n`
-        +`Current: ${DB.sessions.length} sessions, ${DB.exercises.length} exercises`))return;
-      DB=inc; DB.settings=Object.assign({endpoint:'',token:'',unit:'lb'},DB.settings||{});
-      save(); render(true); toast('Restored');
-    }catch(e){ toast('Could not read that file') }
+      if(inc.migrationReview?.blocked)throw new Error('Migration candidate needs review. Use the migration report before importing.');
+      const result=Ledger.merge(DB,inc);
+      if(result.conflicts.length||result.issues.length){
+        download(`iron-ledger-restore-review-${today()}.json`,JSON.stringify(result,null,2),'application/json');
+        return toast('Restore paused. Review downloaded conflicts; current data is unchanged.');
+      }
+      if(!confirm(`Merge this backup without deleting current records?\nResult: ${result.db.sessions.length} sessions, ${result.db.exercises.length} exercises.\nA safety backup of the current cache will download first.`))return;
+      download(`iron-ledger-before-restore-${today()}.json`,JSON.stringify(DB,null,2),'application/json');
+      DB=result.db;save();render(true);toast('Backup merged. Cloud changes queued.');
+    }catch(e){ toast(e.message||'Could not read that file') }
   };
   r.readAsText(file);
   ev.target.value='';
 });
 
 /* ═══════════════════════════ BOOT ═══════════════════════════ */
-load();render();
+try{
+  load();
+  cloud=new LedgerCloud({config:CONFIG,getDB:()=>DB,persist,
+    isSeed:(t,r)=>(t==='exercises'?SEED:t==='routines'?SEED_ROUTINES:[]).some(s=>Ledger.equal(s,r)),
+    changed:()=>{
+      $('hsub').textContent=headerStatus();
+      if($('cloudStatus'))$('cloudStatus').textContent=cloudStatus();
+      const editing=document.activeElement?.matches('input,textarea,select');
+      if(!cloud.busy&&!DB.active&&!editing&&!$('sheet').classList.contains('open')&&renderedData!==JSON.stringify(Ledger.tables.map(t=>DB[t])))render();
+    }});
+  render();cloud.schedule(100);
+}catch(e){
+  $('view').innerHTML='<div class="card pad">The saved cache could not be opened. It has not been overwritten. <button class="btn" id="recoverCache">Download original cache for recovery</button></div>';
+  $('recoverCache').onclick=()=>download('iron-ledger-cache-recovery.json',localStorage.getItem(LS)||'','application/json');
+}
 function sizeViewport(){
   const v=window.visualViewport;
   if(!v||v.scale!==1)return;
@@ -800,7 +881,11 @@ window.visualViewport?.addEventListener('scroll',sizeViewport);
 window.addEventListener('resize',sizeViewport);sizeViewport();
 if('serviceWorker' in navigator)
   navigator.serviceWorker.register('sw.js').catch(()=>{});
-window.addEventListener('online',()=>{if(DB.settings.endpoint&&unsyncedCount())sync(false)});
+window.addEventListener('online',()=>cloud?.schedule(100));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud?.schedule(100)});
+window.addEventListener('storage',ev=>{
+  if(ev.key===LS){otherTabChanged=true;if(cloud)cloud.paused=true;clearTimeout(cloud?.timer);storageError='Another tab changed this cache. Reload this tab before logging.';toast(storageError);}
+});
 </script>
 </body>
 </html>

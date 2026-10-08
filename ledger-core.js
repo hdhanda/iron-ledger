@@ -12,7 +12,8 @@
   function clean(row){const r=clone(row);delete r.synced;return r;}
   const equal=(a,b)=>canonical(clean(a))===canonical(clean(b));
   const completed=s=>!s.status||['completed','deload'].includes(s.status);
-  const order=(a,b)=>a.date.localeCompare(b.date)||((a.endedAt||a.startedAt||0)-(b.endedAt||b.startedAt||0))||a.id.localeCompare(b.id);
+  const time=s=>s.endedAt||s.startedAt||Math.max(0,...(s.entries||[]).flatMap(e=>e.sets.map(st=>st.t||0)));
+  const order=(a,b)=>a.date.localeCompare(b.date)||(time(a)-time(b))||a.id.localeCompare(b.id);
   const setsFor=(s,id)=>s.entries.filter(e=>!id||e.exId===id).flatMap(e=>e.sets);
   const working=sets=>sets.filter(s=>!s.warmup);
   const e1rm=s=>s.r>0?+(s.w*(1+s.r/30)).toFixed(1):0;
@@ -61,6 +62,9 @@
         if(k==='synced')continue;
         if(left[k]===undefined||left[k]===null||left[k]===''){left[k]=clone(v);continue;}
         if(v===null||v===''||v===undefined)continue;
+        if(left[k]&&v&&typeof left[k]==='object'&&typeof v==='object'&&!Array.isArray(left[k])&&!Array.isArray(v)){
+          fields(left[k],v,`${path}.${k}`);continue;
+        }
         if(canonical(left[k])!==canonical(v))conflicts.push({path:`${path}.${k}`,local:clone(left[k]),incoming:clone(v)});
       }
       return left;
@@ -84,6 +88,8 @@
       }
     }
     if(b.active){if(!out.active)out.active=clone(b.active);else if(canonical(out.active)!==canonical(b.active))conflicts.push({path:'active',local:out.active,incoming:b.active});}
+    out.settings||={};
+    for(const [k,v] of Object.entries(b.settings||{}))if(out.settings[k]===undefined||out.settings[k]==='')out.settings[k]=clone(v);
     return{db:out,conflicts,issues:validate(out)};
   }
   const api={tables,clone,key,canonical,clean,equal,completed,order,setsFor,working,e1rm,best,stats,history,previous,records,pr,validate,merge};
