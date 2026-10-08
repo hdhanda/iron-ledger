@@ -16,7 +16,7 @@
     async request(path,{body,token}={}){
       const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),20000);
       try{
-        const res=await this.fetcher(this.config.supabaseUrl+path,{method:body===undefined?'GET':'POST',signal:ctrl.signal,
+        const res=await this.fetcher(this.config.supabaseUrl+path,{method:body===undefined?'GET':'POST',signal:ctrl.signal,cache:'no-store',
           headers:{apikey:this.config.supabaseKey,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},
           ...(body===undefined?{}:{body:JSON.stringify(body)})});
         const data=await res.json();

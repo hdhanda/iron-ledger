@@ -1,6 +1,6 @@
 // One coherent shell per release; close all tabs to activate a waiting update.
 // Never reload an active workout. Bump RELEASE for every published app change.
-const RELEASE='v2-preview-1';
+const RELEASE='v2-preview-2';
 const PREFIX='iron-ledger:'+self.registration.scope+':';
 const CACHE=PREFIX+RELEASE;
 const SHELL=['./','./index.html','./ledger-core.js','./cloud.js','./config.js',
