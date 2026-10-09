@@ -27,7 +27,9 @@ const server=http.createServer((req,res)=>{
    await page.waitForFunction(()=>document.getElementById('toast').textContent==='Test credentials rejected by server');
    assert.equal(authRequests,1);
    await page.getByRole('button',{name:'train',exact:true}).click();
-   await page.evaluate(()=>localStorage.setItem('ironledger','PRODUCTION-CACHE-UNCHANGED'));
+   const activeKey=await page.evaluate(()=>CONFIG.storageKey);
+   const otherKey=activeKey==='ironledger'?'ironledger-v2-preview':'ironledger';
+   await page.evaluate(key=>localStorage.setItem(key,'OTHER-CACHE-UNCHANGED'),otherKey);
    const navBottom=()=>page.locator('nav').evaluate(e=>e.getBoundingClientRect().bottom);
    assert.equal(await navBottom(),844);
    await page.getByRole('button',{name:'Push',exact:true}).click();
@@ -60,7 +62,8 @@ const server=http.createServer((req,res)=>{
    await page.evaluate(()=>navigator.serviceWorker.ready);await page.reload();
    await context.setOffline(true);await page.reload();
    assert.match(await page.locator('#view').innerText(),/Offline Custom/);assert.equal(await page.locator('.setrow').count(),1);
-   assert.equal(await page.evaluate(()=>localStorage.getItem('ironledger')),'PRODUCTION-CACHE-UNCHANGED');
+   assert.equal(await page.evaluate(key=>localStorage.getItem(key),otherKey),'OTHER-CACHE-UNCHANGED');
+   assert.ok(JSON.parse(await page.evaluate(key=>localStorage.getItem(key),activeKey)).sessions.length>=65);
    await context.setOffline(false);
    await page.getByRole('button',{name:'Finish',exact:true}).click();await page.getByRole('button',{name:'train',exact:true}).click();
    await page.getByRole('button',{name:'Log a run',exact:true}).click();await page.getByRole('button',{name:'Save run',exact:true}).click();

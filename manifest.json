@@ -1,6 +1,6 @@
 {
-  "name": "Iron Ledger Preview",
-  "short_name": "Ledger Preview",
+  "name": "Iron Ledger",
+  "short_name": "Iron Ledger",
   "description": "Strength, cardio and body tracking with offline logging and Supabase storage.",
   "id": "./",
   "start_url": "./",

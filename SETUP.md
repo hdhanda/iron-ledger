@@ -1,6 +1,6 @@
 # Iron Ledger v2 setup
 
-This is an incremental vanilla-JavaScript upgrade. The feature branch defaults to **preview**, with a separate local storage key. Do not merge or deploy it over the existing GitHub Pages app until the owner approves cutover after iPhone and development-database testing.
+This is an incremental vanilla-JavaScript upgrade. The owner has approved production cutover and retaining the configured Supabase project as the permanent store. The production build uses the original `ironledger` local storage key. The separate hosted preview retains its own local cache; it now points at the same permanent database, so do not use it for disposable test records. Use a separate Supabase project for future destructive or synthetic testing. Deployment remains pending migration readback verification.
 
 ## 1. Protect the existing app
 
@@ -31,7 +31,7 @@ The URL and publishable key may be committed to the frontend. Passwords, access/
 
 6. Republish only the separate preview. In **Data**, sign in with the user you created. The app saves the Auth session separately from exported workout data. Sign-out keeps cached/pending records on the device. Only your personal devices should use this app.
 
-No Supabase URL/key has been supplied at initial implementation. Until configured, the app explicitly reports **device only**. Do not mistake local saves or mocked tests for permanent cloud storage.
+The current project URL and publishable key are configured, and the owner has confirmed authenticated synchronization. Full migrated-history readback must also be verified before cutover.
 
 ## 3. How storage works
 
@@ -78,7 +78,7 @@ The service worker caches one coherent release. Increment `RELEASE` in `sw.js` w
 
 1. Complete [TESTING.md](TESTING.md), especially installed iPhone keyboard tests and real Supabase two-device readback/offline retry.
 2. Export a final current phone backup and current Sheet, rerun reconciliation, settle review findings, and verify counts and source IDs against the chosen destination project. Development test workouts should not be promoted accidentally.
-3. Review and approve the PR. Do not enable auto-merge. Choose the final Supabase project and user explicitly; development and production projects are separate.
+3. Review and approve the PR. Do not enable auto-merge. The owner explicitly chose to retain the current Supabase project and user permanently. Future development testing must use a separate project.
 4. For the approved production build, set `environment: 'production'`, `storageKey: 'ironledger'`, the final project URL/key, and restore the original manifest/app display name. Increment the service worker release. Keeping the original `ironledger` key preserves the phone's legacy data; initial cloud sync reconciles it rather than replacing it.
 5. Merge and deploy to existing GitHub Pages only after explicit approval. Check production backup, counts, pending/failed/conflict state and active workout before resuming normal training.
 
