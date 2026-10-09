@@ -32,6 +32,21 @@ const server=http.createServer((req,res)=>{
    await page.evaluate(key=>localStorage.setItem(key,'OTHER-CACHE-UNCHANGED'),otherKey);
    const navBottom=()=>page.locator('nav').evaluate(e=>e.getBoundingClientRect().bottom);
    assert.equal(await navBottom(),844);
+   // Reproduce installed iOS reporting a visual viewport short by its top inset.
+   const viewportChecks=await page.evaluate(()=>{
+     const original=Object.getOwnPropertyDescriptor(window,'visualViewport');
+     try{
+       Object.defineProperty(window,'visualViewport',{configurable:true,value:{height:innerHeight-62,offsetTop:0,scale:1}});
+       sizeViewport();
+       const normal=document.querySelector('nav').getBoundingClientRect().bottom;
+       window.visualViewport.height=innerHeight-320;sizeViewport();
+       const keyboard=document.querySelector('nav').getBoundingClientRect().bottom;
+       window.visualViewport.height=innerHeight-62;sizeViewport();
+       const restored=document.querySelector('nav').getBoundingClientRect().bottom;
+       return {normal,keyboard,restored};
+     }finally{Object.defineProperty(window,'visualViewport',original);sizeViewport();}
+   });
+   assert.deepEqual(viewportChecks,{normal:844,keyboard:524,restored:844});
    await page.getByRole('button',{name:'Push',exact:true}).click();
    await page.getByRole('button',{name:'+ Add exercise'}).click();
    await page.evaluate(()=>{window.originalSearch=document.getElementById('q');});
