@@ -872,9 +872,18 @@ try{
 function sizeViewport(){
   const v=window.visualViewport;
   if(!v||v.scale!==1)return;
-  document.documentElement.style.setProperty('--viewport-height',v.height+'px');
-  document.documentElement.style.setProperty('--viewport-top',v.offsetTop+'px');
-  document.body.classList.toggle('keyboard',window.innerHeight-v.height>120);
+  // In installed iOS apps visualViewport can exclude the status-bar area.
+  // Let CSS fill the screen normally; use visual bounds only for the keyboard.
+  const keyboard=window.innerHeight-v.height>120;
+  const style=document.documentElement.style;
+  if(keyboard){
+    style.setProperty('--viewport-height',v.height+'px');
+    style.setProperty('--viewport-top',v.offsetTop+'px');
+  }else{
+    style.removeProperty('--viewport-height');
+    style.removeProperty('--viewport-top');
+  }
+  document.body.classList.toggle('keyboard',keyboard);
 }
 window.visualViewport?.addEventListener('resize',sizeViewport);
 window.visualViewport?.addEventListener('scroll',sizeViewport);
