@@ -47,6 +47,14 @@ const server=http.createServer((req,res)=>{
      }finally{Object.defineProperty(window,'visualViewport',original);sizeViewport();}
    });
    assert.deepEqual(viewportChecks,{normal:844,keyboard:524,restored:844});
+   // Menu must not follow an oversized app body below the usable viewport.
+   await page.evaluate(()=>document.body.style.height='1100px');
+   assert.equal(await navBottom(),844);
+   const buttons=await page.locator('nav button').evaluateAll(nodes=>nodes.map(e=>{
+     const r=e.getBoundingClientRect();return {visible:r.top>=0&&r.bottom<=innerHeight,height:r.height,hit:document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===e};
+   }));
+   assert.equal(buttons.length,4);assert.ok(buttons.every(b=>b.visible&&b.height>=48&&b.hit));
+   await page.evaluate(()=>document.body.style.removeProperty('height'));
    await page.getByRole('button',{name:'Push',exact:true}).click();
    await page.getByRole('button',{name:'+ Add exercise'}).click();
    await page.evaluate(()=>{window.originalSearch=document.getElementById('q');});
