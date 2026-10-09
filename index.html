@@ -25,9 +25,8 @@ input,select,textarea{font-family:inherit}
 .disp{font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em}
 .mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
 
-body{position:fixed;top:var(--viewport-top,0px);width:100%;height:100vh;height:var(--viewport-height,100dvh);display:flex;flex-direction:column;overflow:hidden}
-@media (display-mode:standalone){body{height:var(--viewport-height,100vh)}}
-#shell{width:100%;max-width:560px;margin:0 auto;padding:0 16px 24px;flex:1;min-height:0;overflow-y:auto;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
+body{position:fixed;inset:0;top:var(--viewport-top,0px);height:var(--viewport-height,auto);display:flex;flex-direction:column;overflow:hidden}
+#shell{width:100%;max-width:560px;margin:0 auto;padding:0 16px calc(72px + env(safe-area-inset-bottom,0px));flex:1;min-height:0;overflow-y:auto;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
 header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);
   padding:calc(12px + env(safe-area-inset-top)) 0 12px;margin-bottom:16px;
   display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -76,9 +75,10 @@ header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px s
 .pr{color:var(--sig);font-size:10px;font-weight:700;letter-spacing:.1em}
 .warm{color:var(--mute);font-size:10px;letter-spacing:.1em}
 
-nav{flex-shrink:0;background:var(--surf);border-top:1px solid var(--line);
+nav{position:fixed;left:0;right:0;bottom:var(--nav-bottom,0px);background:var(--surf);border-top:1px solid var(--line);
   display:flex;z-index:30;padding-bottom:env(safe-area-inset-bottom,0px)}
 body.keyboard nav{padding-bottom:0}
+body.keyboard #shell{padding-bottom:72px}
 nav button{flex:1;padding:13px 4px;font-size:10px;min-height:48px;
   letter-spacing:.12em;color:var(--mute);font-weight:600;text-transform:uppercase}
 nav button.on{color:var(--sig);box-shadow:inset 0 2px 0 var(--sig)}
@@ -535,7 +535,7 @@ function vData(){
   const s=DB.settings,n=unsyncedCount();
   const totalSets=DB.sessions.reduce((a,x)=>a+x.entries.reduce((b,e)=>b+e.sets.length,0),0);
   return `
-  <p class="mute" style="font-size:11px">App version: 2.3</p>
+  <p class="mute" style="font-size:11px">App version: 2.4</p>
   ${cloudPanel()}
   <div class="card pad">
     <div class="lbl" style="margin-bottom:8px">The ledger</div>
@@ -881,9 +881,11 @@ function sizeViewport(){
   if(keyboard){
     style.setProperty('--viewport-height',v.height+'px');
     style.setProperty('--viewport-top',v.offsetTop+'px');
+    style.setProperty('--nav-bottom',Math.max(0,window.innerHeight-v.height-v.offsetTop)+'px');
   }else{
     style.removeProperty('--viewport-height');
     style.removeProperty('--viewport-top');
+    style.removeProperty('--nav-bottom');
   }
   document.body.classList.toggle('keyboard',keyboard);
 }
