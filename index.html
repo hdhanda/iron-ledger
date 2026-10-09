@@ -26,6 +26,7 @@ input,select,textarea{font-family:inherit}
 .mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
 
 body{position:fixed;top:var(--viewport-top,0px);width:100%;height:100vh;height:var(--viewport-height,100dvh);display:flex;flex-direction:column;overflow:hidden}
+@media (display-mode:standalone){body{height:var(--viewport-height,100vh)}}
 #shell{width:100%;max-width:560px;margin:0 auto;padding:0 16px 24px;flex:1;min-height:0;overflow-y:auto;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
 header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);
   padding:calc(12px + env(safe-area-inset-top)) 0 12px;margin-bottom:16px;
@@ -534,6 +535,7 @@ function vData(){
   const s=DB.settings,n=unsyncedCount();
   const totalSets=DB.sessions.reduce((a,x)=>a+x.entries.reduce((b,e)=>b+e.sets.length,0),0);
   return `
+  <p class="mute" style="font-size:11px">App version: 2.3</p>
   ${cloudPanel()}
   <div class="card pad">
     <div class="lbl" style="margin-bottom:8px">The ledger</div>

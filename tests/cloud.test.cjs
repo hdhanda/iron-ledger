@@ -80,3 +80,18 @@ test('history pagination loads every remote record beyond server page size',asyn
  await f.cloud.sync();assert.equal(f.db.exercises.length,451);assert.equal(f.cloud.summary().synced,451);
  assert.equal(f.reads(),7); // three exercise pages and four empty tables
 });
+test('legacy metadata-only conflicts clear after fresh read; changed values stay protected',async()=>{
+ const f=setup(),local=f.db.exercises[0];
+ const remote={id:local.id,version:1,data:{...L.clone(local),_source:{sheet:'exercises'}}};
+ f.server.exercises.set(local.id,remote);
+ f.cloud.conflict('exercises',local.id,remote);
+ f.cloud.state().manifest.exercises='1:1';
+ await f.cloud.sync();
+ assert.equal(f.cloud.summary().conflict,0);assert.equal(f.cloud.summary().synced,1);assert.equal(f.writes(),0);
+ assert.deepEqual(f.db.exercises[0]._source,{sheet:'exercises'});
+ const g=setup();g.server.exercises.set('custom',{id:'custom',version:1,data:{...record(),name:'Different'}});
+ await g.cloud.sync();assert.equal(g.cloud.summary().conflict,1);assert.equal(g.db.exercises[0].name,'Custom exercise');
+ // Once acknowledged, a removed metadata field is an edit, not a legacy cache.
+ delete f.db.exercises[0]._source;remote.version=2;
+ await f.cloud.sync();assert.equal(f.cloud.summary().conflict,1);
+});

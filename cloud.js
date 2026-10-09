@@ -68,7 +68,8 @@
       await this.token();
       const manifest=await this.api('rpc/ledger_manifest',{});
       for(const table of L.tables){
-        if(this.state().manifest[table]===manifest[table])continue;
+        const legacyConflict=Object.values(this.state().meta[table]||{}).some(m=>m.status==='conflict'&&!m.base);
+        if(this.state().manifest[table]===manifest[table]&&!legacyConflict)continue;
         let after='',rows=[];
         do{
           const page=await this.api(`${table}?select=id,data,version&order=id.asc&limit=200${after?'&id=gt.'+encodeURIComponent('"'+after.replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"'):''}`);
@@ -108,6 +109,18 @@
       const items=this.getDB()[table],i=items.findIndex(r=>L.key(table,r)===row.id),local=items[i],m=this.meta(table,row.id);
       if(!local){items.push(row.data);this.acknowledge(table,row);return;}
       if(L.equal(local,row.data)){this.acknowledge(table,row);return;}
+      // A first-sync legacy record can lack metadata added by migration.
+      // Accept only an exact structural superset: no changed values, missing
+      // fields, reordered arrays or removed sets; acknowledged edits stay guarded.
+      const contains=(a,b)=>{
+        if(a&&typeof a==='object'){
+          if(!b||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
+          if(Array.isArray(a)&&a.length!==b.length)return false;
+          return Object.keys(a).every(k=>Object.prototype.hasOwnProperty.call(b,k)&&contains(a[k],b[k]));
+        }
+        return a===b;
+      };
+      if(!m?.base&&contains(L.clean(local),L.clean(row.data))){items[i]=row.data;this.acknowledge(table,row);return;}
       const dirty=!m||m.base!==L.canonical(L.clean(local));
       if(!dirty||(!m&&this.isSeed(table,local))){items[i]=row.data;this.acknowledge(table,row);return;}
       if(m?.version===row.version&&m.status!=='conflict')return; // pending edit against the same base
