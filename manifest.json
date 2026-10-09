@@ -1,7 +1,8 @@
 {
   "name": "Iron Ledger",
   "short_name": "Iron Ledger",
-  "description": "Strength, cardio and body tracking. Local first, syncs to Google Sheets.",
+  "description": "Strength, cardio and body tracking with offline logging and Supabase storage.",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

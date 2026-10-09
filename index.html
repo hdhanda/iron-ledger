@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#101217">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -25,7 +25,8 @@ input,select,textarea{font-family:inherit}
 .disp{font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em}
 .mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
 
-#shell{max-width:560px;margin:0 auto;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
+body{position:fixed;top:var(--viewport-top,0px);width:100%;height:100vh;height:var(--viewport-height,100dvh);display:flex;flex-direction:column;overflow:hidden}
+#shell{width:100%;max-width:560px;margin:0 auto;padding:0 16px 24px;flex:1;min-height:0;overflow-y:auto;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
 header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);
   padding:calc(12px + env(safe-area-inset-top)) 0 12px;margin-bottom:16px;
   display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -74,13 +75,18 @@ header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px s
 .pr{color:var(--sig);font-size:10px;font-weight:700;letter-spacing:.1em}
 .warm{color:var(--mute);font-size:10px;letter-spacing:.1em}
 
-nav{position:fixed;bottom:0;left:0;right:0;background:var(--surf);border-top:1px solid var(--line);
-  display:flex;z-index:30}
-nav button{flex:1;padding:13px 4px calc(13px + env(safe-area-inset-bottom));font-size:10px;
+nav{flex-shrink:0;background:var(--surf);border-top:1px solid var(--line);
+  display:flex;z-index:30;padding-bottom:env(safe-area-inset-bottom,0px)}
+body.keyboard nav{padding-bottom:0}
+nav button{flex:1;padding:13px 4px;font-size:10px;min-height:48px;
   letter-spacing:.12em;color:var(--mute);font-weight:600;text-transform:uppercase}
 nav button.on{color:var(--sig);box-shadow:inset 0 2px 0 var(--sig)}
 
-.sheet{position:fixed;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column}
+.sheet{position:absolute;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column;overflow:hidden;padding-bottom:env(safe-area-inset-bottom,0px)}
+.sheet>div{min-height:0}
+body.keyboard .sheet{padding-bottom:0}
+details summary{cursor:pointer;line-height:1.6;padding:8px 0}
+.history-sets{font-size:13px;line-height:1.8;padding-bottom:8px}
 .sheet.open{display:flex}
 .field{width:100%;height:48px;background:var(--surf);border:1px solid var(--line);border-radius:8px;
   color:var(--ink);padding:0 14px;font-size:16px}
@@ -114,9 +120,13 @@ textarea.field{height:auto;min-height:72px;padding:12px 14px;resize:vertical;lin
 <div class="sheet" id="sheet"></div>
 <div class="toast" id="toast"></div>
 
+<script src="ledger-core.js"></script>
+<script src="config.js"></script>
+<script src="cloud.js"></script>
 <script>
 /* ═══════════════════════════ CONSTANTS ═══════════════════════════ */
-const SCHEMA = 2, LS = 'ironledger';
+const SCHEMA = 2, CONFIG=window.IRON_LEDGER_CONFIG, LS=CONFIG.storageKey;
+let cloud, storageError='', otherTabChanged=false, renderedData='';
 
 const PATTERN_GROUP = {
   'Horizontal Push':'Push','Vertical Push':'Push','Chest Iso':'Push','Side Delt':'Push','Triceps':'Push',
@@ -168,7 +178,7 @@ const SEED_ROUTINES = [
 
 /* ═══════════════════════════ HELPERS ═══════════════════════════ */
 function slug(s){return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}
-function uid(p){return p+'_'+Math.random().toString(36).slice(2,8)}
+function uid(p){return p+'_'+crypto.randomUUID()}
 function e1rm(w,r){return r>0?+(w*(1+r/30)).toFixed(1):0}
 function today(){const d=new Date();return new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)}
 function fmt(d){return new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}
@@ -197,22 +207,20 @@ function migrate(d){
   return d;
 }
 function load(){
-  try{const raw=localStorage.getItem(LS); DB=raw?migrate(JSON.parse(raw)):blank()}
-  catch(e){DB=blank()}
+  const raw=localStorage.getItem(LS); DB=raw?migrate(JSON.parse(raw)):blank();
+  for(const k of Ledger.tables)if(!Array.isArray(DB[k]))throw new Error('Invalid cache: '+k);
   DB.settings=Object.assign({endpoint:'',token:'',unit:'lb'},DB.settings||{});
 }
-function save(){try{localStorage.setItem(LS,JSON.stringify(DB))}catch(e){toast('Storage full — export and clear')}}
+function persist(){
+  if(otherTabChanged)throw new Error('Another tab updated this cache. Reload this tab before logging.');
+  try{localStorage.setItem(LS,JSON.stringify(DB));storageError='';}
+  catch(e){storageError='Device storage failed. Keep this app open and download a full backup now.';toast(storageError);throw e;}
+}
+function save(){persist();cloud?.schedule()}
 
 const exById=()=>Object.fromEntries(DB.exercises.map(e=>[e.id,e]));
 
-function lastFor(exId,skipId){
-  const done=DB.sessions.filter(s=>s.id!==skipId).sort((a,b)=>b.date.localeCompare(a.date));
-  for(const s of done){
-    const en=(s.entries||[]).find(e=>e.exId===exId&&e.sets.some(x=>!x.warmup));
-    if(en)return{date:s.date,sets:en.sets.filter(x=>!x.warmup)};
-  }
-  return null;
-}
+function lastFor(exId,skipId){return Ledger.previous(DB.sessions,exId,skipId)}
 function bestE1RM(sets){return sets.length?Math.max(...sets.map(s=>e1rm(s.w,s.r))):0}
 
 /* ═══════════════════════════ SESSION LIFECYCLE ═══════════════════════════ */
@@ -238,22 +246,22 @@ function finishSession(){
   if(!a.entries.length){DB.active=null;save();render();return toast('Empty session discarded')}
   a.endedAt=Date.now(); a.entries.forEach(e=>delete e.draft);
   DB.sessions.push(a); DB.active=null; save(); tab='history'; render(true);
-  toast('Session closed. Tap Sync when you have signal.');
+  toast(cloud?.configured?'Workout saved on this device; cloud sync queued.':'Workout saved on this device. Configure Supabase in Data for cloud storage.');
 }
 
 /* ═══════════════════════════ VIEWS ═══════════════════════════ */
 function render(toTop){
-  const y=window.scrollY;
+  const y=$('shell').scrollTop;
   const a=DB.active;
-  $('hsub').textContent=a?`${a.type} in progress`:`${DB.sessions.length} sessions · ${unsyncedCount()} to sync`;
+  $('hsub').textContent=headerStatus();
   $('hact').innerHTML=a?'<button class="btn btn-sm btn-sig" data-a="finish">Finish</button>':'';
   $('nav').innerHTML=['train','history','progress','data']
     .map(t=>`<button data-a="tab" data-t="${t}" class="${tab===t?'on':''}">${t}</button>`).join('');
   $('view').innerHTML={train:vTrain,history:vHistory,progress:vProgress,data:vData}[tab]();
+  if(storageError)$('view').insertAdjacentHTML('afterbegin',`<div class="card pad" role="alert">${esc(storageError)}</div>`);
   // Only jump to the top when the whole screen changed. Logging a set must not move the page.
-  if(toTop===true){window.scrollTo(0,0);return}
-  window.scrollTo(0,y);
-  requestAnimationFrame(()=>window.scrollTo(0,y));
+  $('shell').scrollTop=toTop===true?0:y;
+  renderedData=JSON.stringify(Ledger.tables.map(t=>DB[t]));
 }
 
 /* ---------- TRAIN ---------- */
@@ -305,6 +313,7 @@ function vSession(){
 function cardEx(e,i,X){
   const ex=X[e.exId]||{name:e.exId,pattern:'Other'};
   const L=lastFor(e.exId,DB.active.id), lastBest=L?bestE1RM(L.sets):0;
+  const allTime=Ledger.records(DB.sessions,e.exId,DB.active.id);
   if(!e.draft){
     const top=L?L.sets.reduce((a,b)=>e1rm(b.w,b.r)>e1rm(a.w,a.r)?b:a):null;
     e.draft={w:(e.plan&&e.plan.targetWeight)??top?.w??0,
@@ -337,7 +346,7 @@ function cardEx(e,i,X){
         <span class="mono" style="font-size:15px">${s.w} × ${s.r}</span>
         <span class="mute mono" style="font-size:11px">RPE ${s.rpe}</span>
         ${s.warmup?'<span class="warm">WARMUP</span>'
-          :(e1rm(s.w,s.r)>=bestNow&&e1rm(s.w,s.r)>lastBest&&lastBest>0?'<span class="pr">PR</span>':'')}
+          :prLabel(s,allTime,e.sets.slice(0,j))}
         <button class="mute" style="margin-left:auto;font-size:17px" data-a="rmSet" data-i="${i}" data-j="${j}">×</button>
       </div>`).join('')}</div>`:''}
     <div class="pad">
@@ -393,16 +402,57 @@ function vHistory(){
 }
 
 /* ---------- PROGRESS ---------- */
+const progress={mode:'sessions',type:'Push',routine:'',exercise:'',query:''};
+function prLabel(set,baseline,earlier){
+  const prior=Ledger.stats(earlier),ref={sets:baseline.sets+prior.sets,
+    weight:Math.max(baseline.weight,prior.weight),e1rm:Math.max(baseline.e1rm,prior.e1rm)};
+  const p=Ledger.pr(set,ref);
+  return [p.weight?'WEIGHT PR':'',p.e1rm?'e1RM PR':''].filter(Boolean).map(t=>`<span class="pr">ALL-TIME ${t}</span>`).join(' ');
+}
+function progressExplorer(){
+  const opts=DB.exercises.filter(e=>e.name.toLowerCase().includes(progress.query.toLowerCase()));
+  return `<div class="card pad">
+    <div class="lbl" style="margin-bottom:12px">Explore your history</div>
+    <div class="row wrap" style="margin-bottom:12px">${['sessions','exercises'].map(m=>`<button class="chip ${progress.mode===m?'on':''}" data-a="progressMode" data-mode="${m}">${m==='sessions'?'Session':'Exercise'} progression</button>`).join('')}</div>
+    ${progress.mode==='sessions'?`
+      <label class="lbl" for="progressType">Session type</label>
+      <select class="field" id="progressType" data-progress="type">${['Push','Pull','Legs','Other'].map(t=>`<option ${t===progress.type?'selected':''}>${t}</option>`).join('')}</select>
+      <label class="lbl" for="progressRoutine">Routine</label>
+      <select class="field" id="progressRoutine" data-progress="routine"><option value="">All routines / free sessions</option>${DB.routines.filter(r=>r.split===progress.type).map(r=>`<option value="${esc(r.id)}" ${r.id===progress.routine?'selected':''}>${esc(r.name)}</option>`).join('')}</select>`:`
+      <label class="lbl" for="progressQuery">Find any exercise</label>
+      <input class="field" id="progressQuery" data-a="progressQuery" value="${esc(progress.query)}" placeholder="Search Bench Press, or any custom lift">
+      <label class="lbl" for="progressExercise">Exercise</label>
+      <select class="field" id="progressExercise" data-progress="exercise"><option value="">Choose exercise</option>${opts.map(e=>`<option value="${esc(e.id)}" ${e.id===progress.exercise?'selected':''}>${esc(e.name)}</option>`).join('')}</select>`}
+  </div><div id="progressResults">${progressResults()}</div>`;
+}
+function progressResults(){
+  const X=exById(),isExercise=progress.mode==='exercises';
+  if(isExercise&&!progress.exercise)return '<p class="empty">Select an exercise to see its complete history.</p>';
+  const sessions=isExercise?Ledger.history(DB.sessions,progress.exercise):DB.sessions.filter(s=>s.type===progress.type&&(!progress.routine||s.routineId===progress.routine)).sort(Ledger.order);
+  if(!sessions.length)return '<p class="empty">No matching sessions yet.</p>';
+  const metric=s=>Ledger.stats(Ledger.setsFor(s,isExercise?progress.exercise:null));
+  const all=Ledger.stats(sessions.filter(Ledger.completed).flatMap(s=>Ledger.setsFor(s,isExercise?progress.exercise:null)));
+  return `<div class="card pad">
+    <div class="lbl">${sessions.length} sessions · oldest → newest</div>
+    ${isExercise?`<p class="mono">Heaviest ${all.weight} lb · best e1RM ${all.e1rm} lb</p>${spark(sessions.map(s=>metric(s).e1rm))}`:
+      `<p class="lbl">Working sets</p>${spark(sessions.map(s=>metric(s).sets))}<p class="lbl">Training volume (lb)</p>${spark(sessions.map(s=>metric(s).volume))}`}
+    <div class="row between mute" style="font-size:11px"><span>${esc(sessions[0].date)}</span><span>${esc(sessions.at(-1).date)}</span></div>
+  </div>${sessions.slice().reverse().map(s=>{
+    const m=metric(s);
+    return `<div class="card pad"><div class="row between wrap"><strong>${esc(s.date)} · ${esc(s.type)}</strong><span class="lbl">${esc(s.status||'completed')}</span></div>
+      <p class="mono" style="font-size:12px">${m.sets} working sets · ${m.volume.toLocaleString()} lb volume${isExercise?' · e1RM '+m.e1rm:''}</p>
+      ${s.entries.filter(e=>!isExercise||e.exId===progress.exercise).map(e=>`<details ${isExercise?'open':''}><summary>${esc(X[e.exId]?.name||e.exId)} · ${Ledger.working(e.sets).length} working sets</summary>
+        <div class="history-sets mono">${e.sets.map((st,i)=>`<div>${i+1}. ${st.w} × ${st.r} · RPE ${st.rpe??'—'} ${st.warmup?'<span class="warm">WARMUP</span>':''}</div>`).join('')}</div></details>`).join('')}
+      ${s.notes?`<p class="mute">${esc(s.notes)}</p>`:''}</div>`;
+  }).join('')}`;
+}
 function vProgress(){
-  if(!DB.sessions.length)return `<p class="empty">Charts appear once you've logged a few sessions.<br>
-    Deeper analysis lives in the Sheet.</p>`;
   const X=exById();
   const seen=new Set(); DB.sessions.forEach(s=>s.entries.forEach(e=>seen.add(e.exId)));
   const anchors=DB.exercises.filter(e=>seen.has(e.id)&&e.anchor);
   const series=anchors.map(a=>{
-    const pts=DB.sessions.filter(s=>s.entries.some(e=>e.exId===a.id&&e.sets.some(x=>!x.warmup)))
-      .sort((x,y)=>x.date.localeCompare(y.date))
-      .map(s=>bestE1RM(s.entries.find(e=>e.exId===a.id).sets.filter(x=>!x.warmup)));
+    const pts=Ledger.history(DB.sessions,a.id).filter(s=>Ledger.working(Ledger.setsFor(s,a.id)).length)
+      .map(s=>Ledger.best(Ledger.setsFor(s,a.id)));
     return{name:a.name,pts};
   }).filter(s=>s.pts.length);
   const wk={};
@@ -410,7 +460,7 @@ function vProgress(){
     const g=(X[e.exId]||{}).group||'Other';
     wk[g]=(wk[g]||0)+e.sets.filter(x=>!x.warmup).reduce((v,x)=>v+x.w*x.r,0)}));
   const maxV=Math.max(1,...Object.values(wk));
-  return `
+  return `${progressExplorer()}
   <div class="card pad">
     <div class="lbl" style="margin-bottom:12px">Estimated 1RM — anchor lifts</div>
     ${series.length?series.map(s=>`
@@ -431,8 +481,7 @@ function vProgress(){
           <div style="height:100%;width:${(v/maxV*100).toFixed(1)}%;background:var(--sig)"></div></div>
       </div>`).join('')}
   </div>
-  <p class="mute" style="font-size:12px;line-height:1.6">Real analysis belongs in the Sheet — this is
-  just enough to know whether the last session moved you forward.</p>`;
+  <p class="mute" style="font-size:12px;line-height:1.6">Epley estimated 1RM. Warmups are excluded from strength records and training volume.</p>`;
 }
 function spark(pts){
   if(pts.length<2)return '<div class="mute" style="font-size:12px">One data point so far.</div>';
@@ -443,10 +492,49 @@ function spark(pts){
 }
 
 /* ---------- DATA ---------- */
+function headerStatus(){
+  if(DB.active)return `${DB.active.type} in progress`;
+  const n=cloud?.summary();
+  return `${CONFIG.environment==='preview'?'Preview · ':''}${DB.sessions.length} sessions · ${cloud?.configured?(n.pending+n.failed+n.conflict)+' to sync':'device only'}`;
+}
+function cloudStatus(){
+  const n=cloud.summary();
+  return `${cloud.busy?'Syncing… ':''}${n.synced} synced · ${n.pending} pending · ${n.failed} failed · ${n.conflict} conflicts. ${cloud.message}`;
+}
+function cloudPanel(){
+  return `<div class="card pad">
+    <div class="lbl">Supabase · ${esc(CONFIG.environment)}</div>
+    <p id="cloudStatus" role="status" style="font-size:13px;line-height:1.6">${esc(cloudStatus())}</p>
+    ${!cloud.configured?'<p class="mute">Cloud storage is not configured yet. Follow SETUP.md to connect a separate development project. Until then, records are saved only on this device.</p>':cloud.auth?`
+      <p class="mute">Signed in as ${esc(cloud.auth.user.email)}</p>
+      <button class="btn btn-ok" data-a="cloudSync">Sync / retry now</button>
+      <button class="btn" style="margin-top:10px" data-a="cloudSignOut">Sign out (keep local records)</button>`:`
+      <label class="lbl" for="cloudEmail">Email</label><input id="cloudEmail" class="field" type="email" autocomplete="username">
+      <label class="lbl" for="cloudPassword">Password</label><input id="cloudPassword" class="field" type="password" autocomplete="current-password">
+      <button class="btn btn-sig" style="margin-top:10px" data-a="cloudSignIn">Sign in</button>`}
+    <button class="btn" style="margin-top:10px" data-a="cloudConflicts">Review cloud conflicts</button>
+    <details><summary>Record sync status</summary>${Ledger.tables.map(table=>`<details><summary>${esc(table)}</summary>${DB[table].map(row=>`<div style="font-size:12px;padding:5px 0">${esc(row.name||[row.date,row.type||row.id].join(' '))}: ${esc(cloud.status(table,row))}</div>`).join('')}</details>`).join('')}</details>
+    <p class="mute" style="font-size:12px">Active workouts remain on this device. Completed records retry automatically while the app is open and when you reopen it online.</p>
+  </div>`;
+}
+function openConflicts(){
+  const conflicts=Ledger.tables.flatMap(table=>Object.entries(cloud.state().meta[table]||{}).filter(([,m])=>m.status==='conflict').map(([id,m])=>({table,id,m})));
+  const sheet=$('sheet');sheet.classList.add('open');
+  sheet.innerHTML=`<div class="pad" style="overflow-y:auto"><div class="row between"><strong>Cloud conflicts</strong><button data-a="close">Close</button></div>
+    <p>Review both versions. Choosing one downloads a safety backup first. A newer cloud change will require another review.</p>
+    ${conflicts.length?conflicts.map(({table,id,m})=>{
+      const local=DB[table].find(r=>Ledger.key(table,r)===id);
+      return `<div class="card pad"><strong>${esc(table)} · ${esc(local.name||local.date||id)}</strong>
+        <details><summary>This device</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(local,null,2))}</pre></details>
+        <details><summary>Supabase</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(m.remote.data,null,2))}</pre></details>
+        ${['remote','local'].map(choice=>`<button class="btn" style="margin-top:8px" data-a="cloudResolve" data-table="${table}" data-id="${esc(id)}" data-choice="${choice}">Use ${choice==='remote'?'Supabase':'this device'} version</button>`).join('')}</div>`;
+    }).join(''):'<p>No conflicts.</p>'}</div>`;
+}
 function vData(){
   const s=DB.settings,n=unsyncedCount();
   const totalSets=DB.sessions.reduce((a,x)=>a+x.entries.reduce((b,e)=>b+e.sets.length,0),0);
   return `
+  ${cloudPanel()}
   <div class="card pad">
     <div class="lbl" style="margin-bottom:8px">The ledger</div>
     <div class="mono" style="font-size:30px">${totalSets}</div>
@@ -454,7 +542,7 @@ function vData(){
     <div class="mute" style="font-size:13px;margin-top:4px">${DB.cardio.length} runs · ${DB.body.length} weigh-ins · ${DB.exercises.length} exercises</div>
   </div>
   <div class="card pad">
-    <div class="lbl" style="margin-bottom:10px">Sync to Google Sheets</div>
+    <div class="lbl" style="margin-bottom:10px">Legacy Google Sheets archive — manual only</div>
     <div class="lbl" style="margin-bottom:5px">Apps Script /exec URL</div>
     <input class="field" style="margin-bottom:10px" data-a="set" data-k="endpoint"
       value="${esc(s.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec">
@@ -463,8 +551,7 @@ function vData(){
     <button class="btn ${n?'btn-ok':''}" data-a="sync" ${s.endpoint?'':'disabled'}>
       ${n?`Sync ${n} pending record${n>1?'s':''}`:'Nothing pending'}</button>
     <button class="btn" style="margin-top:10px" data-a="resync" ${s.endpoint?'':'disabled'}>Re-send everything</button>
-    <p class="mute" style="font-size:12px;margin:12px 0 0;line-height:1.6">Every row carries a unique id and the
-    script skips duplicates, so re-sending is always safe. Nothing is ever deleted from this phone.</p>
+    <p class="mute" style="font-size:12px;margin:12px 0 0;line-height:1.6">Optional one-way archive; Supabase is the cloud source of truth. Your Apple Health Shortcut can continue writing to the original Sheet. The supplied Apps Script does not save custom exercise definitions.</p>
   </div>
   <button class="btn btn-sig" data-a="csv">Export sets to CSV</button>
   <button class="btn" style="margin-top:10px" data-a="backup">Download full backup (JSON)</button>
@@ -527,17 +614,19 @@ async function sync(all){
   try{
     const res=await fetch(endpoint,opts); const j=await res.json();
     if(!j.ok)throw new Error(j.error||'rejected');
-    markSynced(all); toast(`Synced — ${j.written} row${j.written===1?'':'s'} written`);
+    markSynced(p); toast(`Sheet confirmed — ${j.written} row${j.written===1?'':'s'} written`);
   }catch(err){
     try{ await fetch(endpoint,{...opts,mode:'no-cors'});
-      markSynced(all); toast('Sent. Check the Sheet — re-sending is safe.');
+      toast('Sheet delivery unconfirmed. Records remain pending; check the Sheet.');
     }catch(e2){ toast('No connection. Data is safe here — try again later.') }
   }
   render();
 }
-function markSynced(all){
-  const f=x=>{if(all||!x.synced)x.synced=true};
-  DB.sessions.forEach(f);DB.cardio.forEach(f);DB.body.forEach(f);customEx().forEach(f);save();
+function markSynced(sent){
+  for(const table of ['sessions','cardio','body']){
+    const ids=new Set(sent[table].map(r=>r[0]));DB[table].forEach(r=>{if(ids.has(r.id))r.synced=true;});
+  }
+  save();
 }
 function download(name,text,type){
   const b=new Blob([text],{type});const a=document.createElement('a');
@@ -557,10 +646,10 @@ function exportCsv(){
 function openSheet(kind){
   const el=$('sheet'); el.dataset.kind=kind; el.classList.add('open');
   el.innerHTML={pick:shPick,cardio:shCardio,body:shBody}[kind]();
-  if(kind==='pick')el.querySelector('#q')?.focus();
+  if(kind==='pick')el.querySelector('#q')?.focus({preventScroll:true});
 }
 function closeSheet(){NEWEX=null;$('sheet').classList.remove('open');$('sheet').innerHTML=''}
-function shPick(raw){
+function pickResults(raw=''){
   const used=DB.active?DB.active.entries.map(e=>e.exId):[];
   const pats=SPLIT_PATTERNS[DB.active?.type]||null;
   raw=raw||'';                    // exactly what was typed — this is what goes back in the box
@@ -570,6 +659,13 @@ function shPick(raw){
   else if(pats)list=list.filter(e=>pats.includes(e.pattern));
   list.sort((a,b)=>(b.anchor?1:0)-(a.anchor?1:0)||a.name.localeCompare(b.name));
   const exact=DB.exercises.some(e=>e.name.toLowerCase()===q);
+  return `${list.map(e=>`<button class="pick" data-a="addEx" data-id="${esc(e.id)}">
+      <div class="row between"><span style="font-weight:500">${esc(e.name)}</span>
+      ${e.anchor?'<span class="pr">ANCHOR</span>':''}</div>
+      <div class="lbl" style="margin-top:3px">${esc(e.pattern)}</div></button>`).join('')}
+    ${q&&!exact?`<button class="pick" data-a="newEx" style="color:var(--sig);font-weight:600">Create "${esc(raw.trim())}"</button>`:''}`;
+}
+function shPick(raw=''){
   return `
   <div style="padding:calc(16px + env(safe-area-inset-top)) 16px 16px;border-bottom:1px solid var(--line)">
     <div class="row between" style="margin-bottom:12px">
@@ -578,13 +674,7 @@ function shPick(raw){
     <input class="field" id="q" value="${esc(raw)}" data-a="q" placeholder="Search or name a new lift"
       autocomplete="off" autocapitalize="words" spellcheck="false">
   </div>
-  <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch" id="picklist">
-    ${list.map(e=>`<button class="pick" data-a="addEx" data-id="${e.id}">
-      <div class="row between"><span style="font-weight:500">${esc(e.name)}</span>
-      ${e.anchor?'<span class="pr">ANCHOR</span>':''}</div>
-      <div class="lbl" style="margin-top:3px">${esc(e.pattern)}</div></button>`).join('')}
-    ${q&&!exact?`<button class="pick" data-a="newEx" style="color:var(--sig);font-weight:600">Create "${esc(raw.trim())}"</button>`:''}
-  </div>`;
+  <div style="flex:1;overflow-y:auto;overflow-anchor:none;-webkit-overflow-scrolling:touch" id="picklist">${pickResults(raw)}</div>`;
 }
 
 /* Creating an exercise needs a pattern, or it lands in the wrong volume bucket forever. */
@@ -656,8 +746,21 @@ function shBody(){
 /* ═══════════════════════════ EVENTS ═══════════════════════════ */
 document.addEventListener('click',ev=>{
   const t=ev.target.closest('[data-a]'); if(!t)return;
+  if(otherTabChanged&& !['backup','csv'].includes(t.dataset.a)){ev.preventDefault();return toast(storageError);}
   const a=t.dataset.a, i=+t.dataset.i, A=DB.active;
   const acts={
+    cloudSignIn:async()=>{
+      const email=$('cloudEmail').value.trim(),password=$('cloudPassword').value;$('cloudPassword').value='';
+      try{await cloud.signIn(email,password);render();}catch(e){toast(e.message);}
+    },
+    cloudSignOut:async()=>{await cloud.signOut();render()},
+    cloudSync:async()=>{await cloud.sync();render()},
+    cloudConflicts:()=>openConflicts(),
+    cloudResolve:()=>{
+      download(`iron-ledger-before-conflict-${today()}.json`,JSON.stringify(DB,null,2),'application/json');
+      cloud.resolve(t.dataset.table,t.dataset.id,t.dataset.choice);openConflicts();
+    },
+    progressMode:()=>{progress.mode=t.dataset.mode;render()},
     tab:()=>{tab=t.dataset.t;render(true)},
     start:()=>startSession(t.dataset.t,t.dataset.r||null),
     finish:()=>finishSession(),
@@ -682,6 +785,7 @@ document.addEventListener('click',ev=>{
     neAnchor:()=>{NEWEX.name=$('nename').value;NEWEX.anchor=!NEWEX.anchor;$('sheet').innerHTML=shNewEx()},
     neAdd:()=>{const name=$('nename').value.trim();
       if(!name||!NEWEX.pattern)return toast('Name and pattern are both needed');
+      if(DB.exercises.some(e=>e.name.toLowerCase()===name.toLowerCase()))return toast('That exercise already exists. Close and select it from search.');
       const ex={id:uid('ex'),name:name,pattern:NEWEX.pattern,
         group:PATTERN_GROUP[NEWEX.pattern]||'Other',anchor:NEWEX.anchor,custom:true};
       DB.exercises.push(ex);A.entries.push({exId:ex.id,plan:null,sets:[],draft:null});
@@ -707,14 +811,26 @@ document.addEventListener('click',ev=>{
 });
 document.addEventListener('input',ev=>{
   const t=ev.target.closest('[data-a]'); if(!t)return;
+  if(otherTabChanged)return;
   if(t.dataset.a==='in'){DB.active.entries[+t.dataset.i].draft[t.dataset.f]=+t.value||0;save()}
   if(t.dataset.a==='notes'){DB.active.notes=t.value;save()}
   if(t.dataset.a==='set'){DB.settings[t.dataset.k]=t.value.trim();save()}
-  if(t.dataset.a==='q'){const v=t.value;const s=$('sheet');
-    s.innerHTML=shPick(v);const q=s.querySelector('#q');q.focus();q.setSelectionRange(v.length,v.length)}
+  if(t.dataset.a==='progressQuery'){
+    progress.query=t.value;
+    const options=DB.exercises.filter(e=>e.name.toLowerCase().includes(t.value.toLowerCase()));
+    $('progressExercise').innerHTML='<option value="">Choose exercise</option>'+options.map(e=>`<option value="${esc(e.id)}" ${e.id===progress.exercise?'selected':''}>${esc(e.name)}</option>`).join('');
+  }
+  if(t.dataset.a==='q'){
+    const list=$('picklist'),y=list.scrollTop;list.innerHTML=pickResults(t.value);list.scrollTop=y;
+  }
 });
 
 document.addEventListener('change',ev=>{
+  if(ev.target.dataset.progress){
+    progress[ev.target.dataset.progress]=ev.target.value;
+    if(ev.target.dataset.progress==='type'){progress.routine='';render()}else $('progressResults').innerHTML=progressResults();
+    return;
+  }
   if(ev.target.id!=='restoreFile')return;
   const file=ev.target.files[0]; if(!file)return;
   const r=new FileReader();
@@ -722,22 +838,54 @@ document.addEventListener('change',ev=>{
     try{
       const inc=migrate(JSON.parse(r.result));
       if(!inc.exercises||!inc.sessions)throw new Error('not an Iron Ledger backup');
-      if(!confirm(`Replace everything on this phone with the backup?\n\n`
-        +`Backup: ${inc.sessions.length} sessions, ${inc.exercises.length} exercises\n`
-        +`Current: ${DB.sessions.length} sessions, ${DB.exercises.length} exercises`))return;
-      DB=inc; DB.settings=Object.assign({endpoint:'',token:'',unit:'lb'},DB.settings||{});
-      save(); render(true); toast('Restored');
-    }catch(e){ toast('Could not read that file') }
+      if(inc.migrationReview?.blocked)throw new Error('Migration candidate needs review. Use the migration report before importing.');
+      const result=Ledger.merge(DB,inc);
+      if(result.conflicts.length||result.issues.length){
+        download(`iron-ledger-restore-review-${today()}.json`,JSON.stringify(result,null,2),'application/json');
+        return toast('Restore paused. Review downloaded conflicts; current data is unchanged.');
+      }
+      if(!confirm(`Merge this backup without deleting current records?\nResult: ${result.db.sessions.length} sessions, ${result.db.exercises.length} exercises.\nA safety backup of the current cache will download first.`))return;
+      download(`iron-ledger-before-restore-${today()}.json`,JSON.stringify(DB,null,2),'application/json');
+      DB=result.db;save();render(true);toast('Backup merged. Cloud changes queued.');
+    }catch(e){ toast(e.message||'Could not read that file') }
   };
   r.readAsText(file);
   ev.target.value='';
 });
 
 /* ═══════════════════════════ BOOT ═══════════════════════════ */
-load();render();
+try{
+  load();
+  cloud=new LedgerCloud({config:CONFIG,getDB:()=>DB,persist,
+    isSeed:(t,r)=>(t==='exercises'?SEED:t==='routines'?SEED_ROUTINES:[]).some(s=>Ledger.equal(s,r)),
+    changed:()=>{
+      $('hsub').textContent=headerStatus();
+      if($('cloudStatus'))$('cloudStatus').textContent=cloudStatus();
+      const editing=document.activeElement?.matches('input,textarea,select');
+      if(!cloud.busy&&!DB.active&&!editing&&!$('sheet').classList.contains('open')&&renderedData!==JSON.stringify(Ledger.tables.map(t=>DB[t])))render();
+    }});
+  render();cloud.schedule(100);
+}catch(e){
+  $('view').innerHTML='<div class="card pad">The saved cache could not be opened. It has not been overwritten. <button class="btn" id="recoverCache">Download original cache for recovery</button></div>';
+  $('recoverCache').onclick=()=>download('iron-ledger-cache-recovery.json',localStorage.getItem(LS)||'','application/json');
+}
+function sizeViewport(){
+  const v=window.visualViewport;
+  if(!v||v.scale!==1)return;
+  document.documentElement.style.setProperty('--viewport-height',v.height+'px');
+  document.documentElement.style.setProperty('--viewport-top',v.offsetTop+'px');
+  document.body.classList.toggle('keyboard',window.innerHeight-v.height>120);
+}
+window.visualViewport?.addEventListener('resize',sizeViewport);
+window.visualViewport?.addEventListener('scroll',sizeViewport);
+window.addEventListener('resize',sizeViewport);sizeViewport();
 if('serviceWorker' in navigator)
   navigator.serviceWorker.register('sw.js').catch(()=>{});
-window.addEventListener('online',()=>{if(DB.settings.endpoint&&unsyncedCount())sync(false)});
+window.addEventListener('online',()=>cloud?.schedule(100));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloud?.schedule(100)});
+window.addEventListener('storage',ev=>{
+  if(ev.key===LS){otherTabChanged=true;if(cloud)cloud.paused=true;clearTimeout(cloud?.timer);storageError='Another tab changed this cache. Reload this tab before logging.';toast(storageError);}
+});
 </script>
 </body>
 </html>
