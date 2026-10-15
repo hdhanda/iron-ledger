@@ -2,12 +2,13 @@ import {hash} from './parser.mjs';
 export class HealthRepository {
   constructor({url,key,fetcher=fetch}){this.url=url.replace(/\/$/,'');this.key=key;this.fetcher=fetcher;}
   async request(path,{method='GET',body,headers={}}={}){
-    const response=await this.fetcher(this.url+path,{method,headers:{apikey:this.key,Authorization:`Bearer ${this.key}`,...headers},
+    const response=await this.fetcher(this.url+path,{method,headers:{apikey:this.key,...(this.key.startsWith('sb_secret_')?{}:{Authorization:`Bearer ${this.key}`}),...headers},
       ...(body===undefined?{}:{body}),signal:AbortSignal.timeout(25000)});
     if(!response.ok)throw new Error('backend_request_failed'); // Never log response bodies containing health data.
     return response;
   }
   async rpc(name,args){return(await this.request('/rest/v1/rpc/'+name,{method:'POST',body:JSON.stringify(args),headers:{'Content-Type':'application/json'}})).json();}
+  async authenticate(tokenHash){return this.rpc('health_authenticate_import',{p_token_hash:tokenHash});}
   async rateLimit(owner){return this.rpc('health_import_rate',{p_owner:owner});}
   async findBatch(owner,checksum){return(await(await this.request(`/rest/v1/health_import_batches?user_id=eq.${owner}&payload_sha256=eq.${checksum}&select=id,processing_status,counts&limit=1`)).json())[0]??null;}
   async archive(path,bytes,checksum){

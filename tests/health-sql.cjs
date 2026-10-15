@@ -14,6 +14,12 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
  await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase.sql'),'utf8'));
  await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261015051442_apple_health_import.sql'),'utf8'));
  assert.equal((await pg.query("select count(*)::int n from pg_trigger where tgname='health_session_reconcile'")).rows[0].n,0);
+ await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261015051937_health_import_credentials.sql'),'utf8'));
+ await pg.query('insert into health_private.import_tokens(token_sha256,user_id,label) values($1,$2,$3)',['a'.repeat(64),owner,'synthetic']);
+ await pg.exec('set role service_role;');
+ assert.equal((await pg.query('select public.health_authenticate_import($1) as owner',['a'.repeat(64)])).rows[0].owner,owner);
+ await pg.exec("update health_private.import_tokens set enabled=false;reset role;");
+ assert.equal((await pg.query('select public.health_authenticate_import($1) as owner',['a'.repeat(64)])).rows[0].owner,null);
  // The production table-only stage must not add a trigger to the Ledger write path.
  await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase/deferred/health_session_reconciliation.sql'),'utf8'));
  const rpc=async(name,args)=> (await pg.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) as result`,args)).rows[0].result;
@@ -53,6 +59,8 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
  await rpc('ledger_write',['sessions','later',JSON.stringify({...session,id:'later',date:'2026-10-11',startedAt:session.startedAt+86400000}),null]);
  assert.equal((await pg.query("select match_status from public.health_workout_matches where session_id='later'")).rows[0].match_status,'matched');
  await assert.rejects(()=>rpc('health_requeue_batch',[batch.id,owner]),/permission denied/);
+ await assert.rejects(()=>rpc('health_authenticate_import',['a'.repeat(64)]),/permission denied/);
+ await assert.rejects(()=>pg.query('select * from health_private.import_tokens'),/permission denied/);
  const tables=['health_import_batches','health_workouts','health_metric_observations','health_workout_series','health_events','health_workout_matches'];
  for(const table of tables){
    await assert.rejects(()=>pg.exec(`delete from public.${table}`),/permission denied/);

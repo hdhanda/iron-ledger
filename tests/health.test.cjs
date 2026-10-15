@@ -46,3 +46,23 @@ test('projection failures retain raw archive and safely retry; unknown families 
  const r=memory(),h=createHandler({ownerId:owner,tokenHashes:[await hash(token)],repository:r});assert.equal((await (await h(req({data:{futureFamily:{anything:true}}}))).json()).status,'quarantined');
 });
 module.exports={workout,date};
+test('service-side token mapping fixes ownership, revokes immediately, and fails closed on lookup errors',async()=>{
+ const {hash,createHandler}=await setup(),repo=memory();let enabled=true;
+ const handler=createHandler({repository:repo,resolveOwner:async digest=>enabled&&digest===await hash(token)?owner:null});
+ assert.equal((await handler(req({user_id:'spoofed',data:{metrics:[]}}))).status,200);
+ assert.equal([...repo.batches.values()][0].user_id,owner);const writes=repo.writes;enabled=false;
+ assert.equal((await handler(req({data:{metrics:[]}}))).status,401);assert.equal(repo.writes,writes);
+ const unavailable=createHandler({repository:repo,resolveOwner:async()=>{throw Error('private')}});
+ assert.equal((await unavailable(req({data:{metrics:[]}}))).status,503);assert.equal(repo.writes,writes);
+});
+test('runtime accepts only the configured project and keeps modern secret keys out of Bearer headers',async()=>{
+ const {createRuntimeHandler}=await import('../supabase/functions/import-health/runtime.mjs');let requests=0;
+ const env=values=>({get:k=>values[k]});
+ const closed=createRuntimeHandler(env({SUPABASE_URL:'https://wrong.supabase.co',SUPABASE_SECRET_KEYS:'{"default":"sb_secret_synthetic"}'}),async()=>{requests++});
+ assert.equal((await closed(req({data:{metrics:[]}}))).status,503);assert.equal(requests,0);
+ const handler=createRuntimeHandler(env({SUPABASE_URL:'https://armhlqarrdzioobepcng.supabase.co',SUPABASE_SECRET_KEYS:'{"default":"sb_secret_synthetic"}'}),async(url,options)=>{
+   requests++;assert.ok(url.endsWith('/rpc/health_authenticate_import'));assert.equal(options.headers.apikey,'sb_secret_synthetic');assert.equal(options.headers.Authorization,undefined);
+   return new Response('null',{headers:{'Content-Type':'application/json'}});
+ });
+ assert.equal((await handler(req({data:{metrics:[]}}))).status,401);assert.equal(requests,1);
+});

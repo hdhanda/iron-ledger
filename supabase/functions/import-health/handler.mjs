@@ -9,13 +9,18 @@ async function readBounded(req){
     if(size>MAX_BYTES){await reader.cancel();throw new Error('payload_size');}chunks.push(value);}
   const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}return bytes;
 }
-export function createHandler({ownerId,tokenHashes,repository,now=()=>new Date()}) {
-  const configured=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerId??'')&&Array.isArray(tokenHashes)&&tokenHashes.length>0&&tokenHashes.every(s=>/^[0-9a-f]{64}$/.test(s));
+export function createHandler({ownerId,tokenHashes,resolveOwner,repository,now=()=>new Date()}) {
+  const validOwner=value=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value??'');
+  const configured=typeof resolveOwner==='function'||(validOwner(ownerId)&&Array.isArray(tokenHashes)&&tokenHashes.length>0&&tokenHashes.every(s=>/^[0-9a-f]{64}$/.test(s)));
   return async req=>{
     if(!configured)return json(503,{error:'import_not_configured'});
     if(req.method!=='POST')return json(405,{error:'method_not_allowed'});
     const token=req.headers.get('x-health-import-token')??'';
-    if(token.length<43||token.length>256||!tokenHashes.includes(await hash(token)))return json(401,{error:'unauthorized'});
+    if(token.length<43||token.length>256)return json(401,{error:'unauthorized'});
+    const digest=await hash(token);let requestOwner;
+    try{requestOwner=resolveOwner?await resolveOwner(digest):tokenHashes.includes(digest)?ownerId:null;}
+    catch{return json(503,{error:'authentication_unavailable'});}
+    if(!validOwner(requestOwner))return json(401,{error:'unauthorized'});
     if(req.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')return json(415,{error:'json_required'});
     let bytes,payload,envelope;
     try{bytes=await readBounded(req);payload=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));checkComplexity(payload);envelope=validateEnvelope(payload);}
@@ -26,26 +31,26 @@ export function createHandler({ownerId,tokenHashes,repository,now=()=>new Date()
     const checksum=await hash(bytes),date=now().toISOString();
     // Hash the automation identifier to keep untrusted identifiers out of object paths.
     const automationPath=await hash(metadata.automationId??'unspecified');
-    const path=`${ownerId}/export/${date.slice(0,4)}/${date.slice(5,7)}/${automationPath}/${checksum}.json`;
+    const path=`${requestOwner}/export/${date.slice(0,4)}/${date.slice(5,7)}/${automationPath}/${checksum}.json`;
     let batch;
     try{
-      if(!await repository.rateLimit(ownerId))return json(429,{error:'rate_limited'});
+      if(!await repository.rateLimit(requestOwner))return json(429,{error:'rate_limited'});
       // Replay lookup is scoped by configured owner, never a payload-supplied user ID.
-      batch=await repository.findBatch(ownerId,checksum);
+      batch=await repository.findBatch(requestOwner,checksum);
       if(batch&&['completed','quarantined'].includes(batch.processing_status))return json(200,{batch_id:batch.id,status:batch.processing_status,replay:true,counts:batch.counts});
       if(!batch){
         await repository.archive(path,bytes,checksum);
-        batch=await repository.register({user_id:ownerId,payload_sha256:checksum,storage_path:path,bytes:bytes.length,
+        batch=await repository.register({user_id:requestOwner,payload_sha256:checksum,storage_path:path,bytes:bytes.length,
           data_families:[...envelope.families,...envelope.unknown],automation_id:metadata.automationId,vendor_session_id:metadata.vendorSessionId,
           export_version:metadata.exportVersion,aggregation_info:{level:metadata.aggregation,period:metadata.exportPeriod},processing_status:'accepted'});
       }
     }catch{return json(503,{error:'durable_acceptance_failed'});}
     try{
       const rows=await project(payload,metadata);
-      const result=await repository.commit(batch.id,ownerId,rows);
+      const result=await repository.commit(batch.id,requestOwner,rows);
       return json(200,{batch_id:batch.id,status:result.status,counts:result.counts});
     }catch{
-      try{await repository.failed(batch.id,ownerId,'projection_failed');}catch{/* raw archive and accepted batch still recoverable */}
+      try{await repository.failed(batch.id,requestOwner,'projection_failed');}catch{/* raw archive and accepted batch still recoverable */}
       // Non-2xx causes vendor retry; do not disguise a failed projection as successful sync.
       return json(503,{batch_id:batch.id,status:'retryable',error:'projection_failed'});
     }
