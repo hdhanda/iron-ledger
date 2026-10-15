@@ -12,7 +12,10 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
  insert into auth.users values('${owner}'),('${other}');
  create schema storage;grant usage on schema storage to anon,authenticated;create table storage.objects(id text,bucket_id text);alter table storage.objects enable row level security;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
  await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase.sql'),'utf8'));
- await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261015050259_apple_health_import.sql'),'utf8'));
+ await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261015051442_apple_health_import.sql'),'utf8'));
+ assert.equal((await pg.query("select count(*)::int n from pg_trigger where tgname='health_session_reconcile'")).rows[0].n,0);
+ // The production table-only stage must not add a trigger to the Ledger write path.
+ await pg.exec(fs.readFileSync(path.join(__dirname,'../supabase/deferred/health_session_reconciliation.sql'),'utf8'));
  const rpc=async(name,args)=> (await pg.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) as result`,args)).rows[0].result;
  const register=async(payload)=>rpc('health_register_batch',[JSON.stringify({user_id:owner,payload_sha256:await hash(JSON.stringify(payload)),storage_path:owner+'/synthetic.json',bytes:100,data_families:Object.keys(payload.data),aggregation_info:{}})]);
  const makeWorkout=(id,start,name='Traditional Strength Training')=>({id,name,start,end:start.replace('09:30','10:30').replace('09:32','10:32'),duration:3600});

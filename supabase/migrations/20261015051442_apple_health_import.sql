@@ -1,5 +1,6 @@
--- Additive development migration. Existing Ledger tables/RPCs remain authoritative.
+-- Additive Health schema in the existing Iron Ledger project. Existing Ledger tables/RPCs remain authoritative.
 begin;
+set local lock_timeout='5s';
 create schema if not exists health_private;
 revoke all on schema health_private from public, anon, authenticated;
 create table public.health_import_batches (
@@ -83,6 +84,10 @@ create index health_observations_metric on public.health_metric_observations(use
 create index health_series_metric on public.health_workout_series(user_id,workout_key,metric_name,observed_at);
 create index health_events_family on public.health_events(user_id,data_family,start_at desc);
 create index health_batches_received on public.health_import_batches(user_id,received_at desc);
+create index health_workouts_batch on public.health_workouts(user_id,raw_batch_id);
+create index health_metric_observations_batch on public.health_metric_observations(user_id,raw_batch_id);
+create index health_events_batch on public.health_events(user_id,raw_batch_id);
+create index health_workout_series_batch on public.health_workout_series(user_id,raw_batch_id);
 alter table public.health_import_batches enable row level security;
 revoke all on public.health_import_batches from public, anon, authenticated;
 grant select on public.health_import_batches to authenticated;
@@ -123,6 +128,7 @@ create table health_private.rate_limits(user_id uuid primary key, window_at time
 grant usage on schema health_private to service_role;
 grant all on all tables in schema health_private to service_role;
 alter table health_private.rate_limits enable row level security;
+create policy service_rate_access on health_private.rate_limits for all to service_role using (true) with check (true);
 create function public.health_import_rate(p_owner uuid) returns boolean
 language plpgsql security invoker set search_path='' as $$
 declare n int;
@@ -155,7 +161,6 @@ language sql security invoker set search_path='' as $$
  update public.health_import_batches set processing_status='retryable',error_reason_redacted='projection_failed'
  where id=p_batch and user_id=p_owner and processing_status not in ('completed','quarantined');
 $$;
-grant select on public.sessions to service_role;
 create function public.health_reconcile(p_owner uuid) returns void
 language plpgsql security invoker set search_path='' as $$
 begin
@@ -181,16 +186,6 @@ begin
  case when sr=1 and coalesce(next_workout-offset_sec,300)>=300 and coalesce(next_session-offset_sec,300)>=300 then 'matched' else 'review' end,
  'auto_start',offset_sec,'Start-time comparison; session end is not used.' from ranked where wr=1;
 end $$;
--- Trigger executes as owner because authenticated Ledger writers cannot mutate health tables.
--- NEW.user_id is constrained by existing sessions RLS. No client parameters or dynamic SQL.
-create function health_private.reconcile_session() returns trigger
-language plpgsql security definer set search_path='' as $$
-begin
- if (select auth.uid()) is not null and (select auth.uid())<>new.user_id then raise exception 'owner mismatch'; end if;
- perform public.health_reconcile(new.user_id);return new;
-end $$;
-revoke all on function health_private.reconcile_session() from public,anon,authenticated;
-create trigger health_session_reconcile after insert or update on public.sessions for each row execute function health_private.reconcile_session();
 create function public.health_commit_projection(p_batch uuid,p_owner uuid,p_rows jsonb) returns jsonb
 language plpgsql security invoker set search_path='' as $$
 declare b public.health_import_batches; v_counts jsonb := '{}'; n int;
