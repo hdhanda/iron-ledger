@@ -7,3 +7,4 @@ config.local.js
 test-results/
 __pycache__/
 .env*
+supabase/.temp/

@@ -62,3 +62,7 @@ Use a separate HTTPS preview origin and its **Iron Ledger Preview** icon. Keep t
 - The full phone backup and the deferred source review decisions are needed before finalizing migration. Current reference counts are not treated as proof of completeness.
 - Apple Health remains in the original Sheet and source archive; its existing Shortcut has not been altered.
 - A private preview may require its hosting sign-in before first online use. That is separate from Supabase Auth. Test installed/offline behavior on the actual iPhone.
+
+## Apple Health development release
+
+See [docs/APPLE_HEALTH.md](docs/APPLE_HEALTH.md) for the isolated health SQL/ingest/client checks and remaining hosted/device acceptance gates. The browser suite now verifies imported running summaries and legacy cardio backup preservation instead of manual run entry. Existing core/cloud/SQL and migration checks still apply.

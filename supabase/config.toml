@@ -1,0 +1,4 @@
+project_id = "iron-ledger-health-development"
+
+[functions.import-health]
+verify_jwt = false
