@@ -75,3 +75,6 @@ node --test tests/apple-native.test.cjs
 ```
 
 These synthetic checks cover byte-identical source restoration, unknown/nested XML content, new numeric and categorical metrics, GPX references, deterministic preparation, Finder metadata, device-pointer normalization, weekly replay/change detection, manifest dependencies, chunk tamper rejection, owner-scoped lookups and local capacity refusal. Actual export staging is private and never included in Git. See docs/NATIVE_APPLE_HEALTH.md for manual exports, transfer scopes, resumability and capacity review.
+# Native ChatGPT Health database foundation
+
+Run `node tests/health-connector-sql.cjs` with `PGLITE_MODULE` pointing at an isolated installation of `@electric-sql/pglite` when it is not on the module search path. Uses synthetic records only. Covers the V1 schema, owner-only tables/views, source and cutoff checks, normalized associations, hourly-bucket exclusion, sync completion gates, native energy semantics and unchanged Ledger behavior. See `docs/CHATGPT_HEALTH_CONNECTOR_V1.md` for the manual writer contract and integration limitations.

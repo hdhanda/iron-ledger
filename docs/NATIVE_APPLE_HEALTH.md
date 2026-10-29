@@ -1,6 +1,6 @@
 # Native Apple Health export → Mac → Iron Ledger
 
-This is the current import pathway. No paid exporter app, Shortcut or live phone sync is required. Export manually as often as desired (weekly is fine); the Mac handles parsing, integrity verification, replay protection and uploads. The existing Supabase project is used. The current PWA release is not changed by preparing or archiving exports.
+This is the earlier, broad XML import pathway. The current narrower experiment uses [native ChatGPT Health V1](CHATGPT_HEALTH_CONNECTOR_V1.md); do not use this full-history archive/upload for that scope. This XML tool remains available separately without a paid exporter app, Shortcut or live phone sync. The Mac handles parsing, integrity verification, replay protection and uploads to the existing Supabase project. Preparing or archiving an export does not change the PWA release.
 
 ## What is preserved
 
