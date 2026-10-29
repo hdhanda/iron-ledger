@@ -17,7 +17,7 @@ async function createLocalBridge(config,{archiveDirectory}={}){
   create table net._http_response(id bigint,status_code int,timed_out boolean,created timestamptz default now());
   create function net.http_post(url text,body jsonb default '{}',params jsonb default '{}',headers jsonb default '{}',timeout_milliseconds integer default 2000) returns bigint language sql as $$insert into net.http_request_queue(headers,body) values(headers,body) returning id$$;
  `);
- for(const filename of ['supabase.sql','supabase/migrations/20261015051442_apple_health_import.sql','supabase/migrations/20261015051937_health_import_credentials.sql','supabase/migrations/20261029040928_chatgpt_health_connector_v1.sql','supabase/migrations/20261029043325_health_connector_sql_bridge.sql']){
+ for(const filename of ['supabase.sql','supabase/migrations/20261015051442_apple_health_import.sql','supabase/migrations/20261015051937_health_import_credentials.sql','supabase/migrations/20261029040928_chatgpt_health_connector_v1.sql','supabase/migrations/20261029045933_health_connector_sql_bridge.sql']){
   let sql=fs.readFileSync(path.join(ROOT,filename),'utf8');sql=sql.replace('create extension if not exists pg_net;','-- pg_net is mocked in this isolated engine.');await pg.exec(sql);
  }
  // Supabase's live default grants allow the existing reconciler to read sessions.
