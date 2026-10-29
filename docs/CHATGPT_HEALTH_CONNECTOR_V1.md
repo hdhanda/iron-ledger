@@ -2,6 +2,8 @@
 
 This supersedes the broad XML/vendor collection scope for the current experiment. The native XML importer remains available separately; do not run its broad historical upload for this V1.
 
+The SQL staging → private worker bridge is now implemented separately and awaits deployment approval. See [CHATGPT_HEALTH_EXECUTION_RUNBOOK.md](CHATGPT_HEALTH_EXECUTION_RUNBOOK.md) for the exact SQL-only ChatGPT execution path, supported input manifest and honest capability gates. The foundation described here remains deployed; the new bridge is not yet live.
+
 V1 is a manually initiated evaluation of Apple Watch workouts starting on or after **September 1, 2026, midnight America/Los_Angeles** (`2026-09-01T07:00:00Z`). Include all eligible workout activity types, not only running and strength. Preserve existing Iron Ledger logs. Recurring triggers, real-data backfill and PWA changes are separate steps. A stored automation flag is not a scheduled task.
 
 ## Database objects
