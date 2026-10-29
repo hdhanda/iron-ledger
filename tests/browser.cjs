@@ -1,7 +1,7 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const http=require('node:http'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..');
-const allowed=new Set(['index.html','ledger-core.js','cloud.js','config.js','manifest.json','sw.js','icon-180.png','icon-192.png','icon-512.png']);
+const allowed=new Set(['index.html','ledger-core.js','cloud.js','health.js','config.js','manifest.json','sw.js','icon-180.png','icon-192.png','icon-512.png']);
 const server=http.createServer((req,res)=>{
  const name=new URL(req.url,'http://local').pathname.slice(1)||'index.html';
  if(!allowed.has(name)){res.writeHead(404).end();return;}
@@ -89,12 +89,28 @@ const server=http.createServer((req,res)=>{
    assert.ok(JSON.parse(await page.evaluate(key=>localStorage.getItem(key),activeKey)).sessions.length>=65);
    await context.setOffline(false);
    await page.getByRole('button',{name:'Finish',exact:true}).click();await page.getByRole('button',{name:'train',exact:true}).click();
-   await page.getByRole('button',{name:'Log a run',exact:true}).click();await page.getByRole('button',{name:'Save run',exact:true}).click();
+   assert.equal(await page.getByRole('button',{name:'Log a run',exact:true}).count(),0);
+   await page.evaluate(()=>{
+     DB.cardio.push({id:'legacy',date:'2026-01-01',miles:99,minutes:999,effort:6});save();
+     const syntheticCloud={config:{healthEnabled:true,supabaseUrl:'https://synthetic.supabase.co',storageKey:'synthetic'},auth:{user:{id:'synthetic'}},api:async path=>{
+       if(path.startsWith('health_workouts'))return [{id:'synthetic-run',workout_key:'synthetic-run',activity_type:'Running',source_timestamp:'2026-10-10 09:30:00 -0700',start_at:'2026-10-10T16:30:00Z',distance_m:4828.032,duration_sec:1800,hr_avg:140,hr_max:160,source:'Synthetic Watch'}];
+       if(path.startsWith('health_workout_matches'))return [];
+       return path.includes('processing_status=eq.completed')?[{processed_at:new Date().toISOString()}]:[{processing_status:'completed',received_at:new Date().toISOString()}];
+     }};
+     health=new Health.LedgerHealth({cloud:syntheticCloud});
+   });
+   await page.evaluate(async()=>{await health.refresh(true);tab='history';render()});
+   assert.match(await page.locator('#view').innerText(),/RUN · APPLE HEALTH/i);assert.match(await page.locator('#view').innerText(),/3.00 mi/);assert.doesNotMatch(await page.locator('#view').innerText(),/999 min/);
+   await page.getByRole('button',{name:'progress',exact:true}).click();assert.match(await page.locator('#view').innerText(),/Weekly mileage/i);
+   await page.getByText('Weekly mileage, frequency and pace',{exact:true}).click();
+   assert.match(await page.locator('#view').innerText(),/3.00 mi · 1 run/);
+   await page.screenshot({path:path.join(root,'test-results/apple-health.png')});
    await page.getByRole('button',{name:'train',exact:true}).click();await page.getByRole('button',{name:'Log body stats',exact:true}).click();await page.getByRole('button',{name:'Save stats',exact:true}).click();
    assert.equal(await page.evaluate(()=>DB.cardio.length),1);assert.equal(await page.evaluate(()=>DB.body.length),1);
    await page.getByRole('button',{name:'data',exact:true}).click();
-   const downloaded=page.waitForEvent('download');await page.getByRole('button',{name:'Download full backup (JSON)'}).click();assert.match((await downloaded).suggestedFilename(),/backup/);
+   const downloaded=page.waitForEvent('download');await page.getByRole('button',{name:'Download full backup (JSON)'}).click();const backup=await downloaded;assert.match(backup.suggestedFilename(),/backup/);
+   const exported=JSON.parse(fs.readFileSync(await backup.path(),'utf8'));assert.equal(exported.cardio[0].id,'legacy');assert.equal(exported.health,undefined);
    const csv=page.waitForEvent('download');await page.getByRole('button',{name:'Export sets to CSV'}).click();assert.match((await csv).suggestedFilename(),/\.csv$/);
-   assert.deepEqual(errors,[]);console.log('PASS: mobile navigation, stable search, 65-session history, offline restart, custom exercises, cardio/body, exports, production cache isolation.');
+   assert.deepEqual(errors,[]);console.log('PASS: mobile navigation, stable search, 65-session history, offline restart, custom exercises, imported runs, legacy preservation, body, exports, production cache isolation.');
  }finally{await browser.close();server.close();}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1;});

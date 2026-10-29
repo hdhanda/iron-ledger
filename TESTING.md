@@ -62,3 +62,19 @@ Use a separate HTTPS preview origin and its **Iron Ledger Preview** icon. Keep t
 - The full phone backup and the deferred source review decisions are needed before finalizing migration. Current reference counts are not treated as proof of completeness.
 - Apple Health remains in the original Sheet and source archive; its existing Shortcut has not been altered.
 - A private preview may require its hosting sign-in before first online use. That is separate from Supabase Auth. Test installed/offline behavior on the actual iPhone.
+
+## Apple Health development release
+
+See [docs/APPLE_HEALTH.md](docs/APPLE_HEALTH.md) for the isolated health SQL/ingest/client checks and remaining hosted/device acceptance gates. The browser suite now verifies imported running summaries and legacy cardio backup preservation instead of manual run entry. Existing core/cloud/SQL and migration checks still apply.
+
+## Native weekly Apple Health imports
+
+```sh
+python3 tests/apple_health_test.py
+node --test tests/apple-native.test.cjs
+```
+
+These synthetic checks cover byte-identical source restoration, unknown/nested XML content, new numeric and categorical metrics, GPX references, deterministic preparation, Finder metadata, device-pointer normalization, weekly replay/change detection, manifest dependencies, chunk tamper rejection, owner-scoped lookups and local capacity refusal. Actual export staging is private and never included in Git. See docs/NATIVE_APPLE_HEALTH.md for manual exports, transfer scopes, resumability and capacity review.
+# Native ChatGPT Health database foundation
+
+Run `node tests/health-connector-sql.cjs` with `PGLITE_MODULE` pointing at an isolated installation of `@electric-sql/pglite` when it is not on the module search path. Uses synthetic records only. Covers the V1 schema, owner-only tables/views, source and cutoff checks, normalized associations, hourly-bucket exclusion, sync completion gates, native energy semantics and unchanged Ledger behavior. See `docs/CHATGPT_HEALTH_CONNECTOR_V1.md` for the manual writer contract and integration limitations.

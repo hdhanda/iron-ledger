@@ -1,9 +1,9 @@
 // One coherent shell per release; close all tabs to activate a waiting update.
 // Never reload an active workout. Bump RELEASE for every published app change.
-const RELEASE='v2-production-4';
+const RELEASE='v3-health-preview-1';
 const PREFIX='iron-ledger:'+self.registration.scope+':';
 const CACHE=PREFIX+RELEASE;
-const SHELL=['./','./index.html','./ledger-core.js','./cloud.js','./config.js',
+const SHELL=['./','./index.html','./ledger-core.js','./cloud.js','./health.js','./config.js',
   './manifest.json','./icon-180.png','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)));

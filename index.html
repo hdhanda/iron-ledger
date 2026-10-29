@@ -124,10 +124,11 @@ textarea.field{height:auto;min-height:72px;padding:12px 14px;resize:vertical;lin
 <script src="ledger-core.js"></script>
 <script src="config.js"></script>
 <script src="cloud.js"></script>
+<script src="health.js"></script>
 <script>
 /* ═══════════════════════════ CONSTANTS ═══════════════════════════ */
 const SCHEMA = 2, CONFIG=window.IRON_LEDGER_CONFIG, LS=CONFIG.storageKey;
-let cloud, storageError='', otherTabChanged=false, renderedData='';
+let cloud, health, storageError='', otherTabChanged=false, renderedData='';
 
 const PATTERN_GROUP = {
   'Horizontal Push':'Push','Vertical Push':'Push','Chest Iso':'Push','Side Delt':'Push','Triceps':'Push',
@@ -282,7 +283,7 @@ function vStart(){
       .map(r=>`<button class="chip sm" data-a="start" data-t="${r.split}" data-r="${r.id}">${esc(r.name)} · ${r.split}</button>`)).join('')}</div>
     ${last?`<div class="mute" style="font-size:12px;margin-top:16px">Last: ${last.type} on ${fmt(last.date)}</div>`:''}
   </div>
-  <button class="btn" style="margin-bottom:12px" data-a="sheet" data-s="cardio">Log a run</button>
+  <p class="mute" style="font-size:12px">Runs will appear from Apple Health after import is connected.</p>
   <button class="btn" data-a="sheet" data-s="body">Log body stats</button>`;
 }
 function vSession(){
@@ -377,27 +378,53 @@ function cardEx(e,i,X){
   </div>`;
 }
 
+/* Read-only Health presentation: no raw routes or sensitive event families. */
+function healthWorkoutSummary(w){
+  const mi=Health.miles(w),pace=Health.pace(w);
+  const parts=[mi===null?'Distance unavailable':mi.toFixed(2)+' mi',w.duration_sec==null?'Duration unavailable':(w.duration_sec/60).toFixed(1)+' min'];
+  if(pace!==null){const seconds=Math.round(pace*60);parts.push(Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0')+' /mi');}
+  if(w.hr_avg!=null)parts.push('HR avg '+w.hr_avg);if(w.hr_max!=null)parts.push('HR max '+w.hr_max);
+  if(w.active_energy!=null)parts.push(w.active_energy+' '+(w.energy_unit||'energy units unavailable')+' active energy (estimated)');
+  return `<p class="mono" style="font-size:12px">${parts.map(esc).join(' · ')}</p><p class="mute" style="font-size:11px">Apple Health${w.source?' · '+esc(w.source):''}</p>`;
+}
+function healthLiftSummary(id){
+  const match=health?.matches.find(m=>m.session_id===id&&m.match_status==='matched');
+  const w=match&&health.workouts.find(w=>w.workout_key===match.workout_key);
+  if(!w)return '';
+  const parts=[w.duration_sec==null?'Duration unavailable':(w.duration_sec/60).toFixed(1)+' min'];
+  if(w.hr_avg!=null)parts.push('HR avg '+w.hr_avg);if(w.hr_max!=null)parts.push('HR max '+w.hr_max);
+  if(w.active_energy!=null)parts.push(w.active_energy+' '+(w.energy_unit||'units unavailable')+' active energy (estimated)');
+  return `<p class="mute" style="font-size:12px">Apple Health · ${parts.map(esc).join(' · ')}</p>`;
+}
+function healthRunningProgress(){
+  const weeks=Health.runningWeeks(health?.workouts||[]),reviews=health?.matches.filter(m=>m.match_status==='review').length||0;
+  return `<div class="card pad"><div class="lbl">Running · Apple Health</div><p class="mute" style="font-size:12px">${esc(health?.status()||'Setup pending.')}</p>
+    ${weeks.length?`<p class="lbl">Weekly mileage</p>${spark(weeks.map(w=>w.miles))}<details><summary>Weekly mileage, frequency and pace</summary>${weeks.slice().reverse().map(w=>`<p class="mono" style="font-size:12px">${w.week} · ${w.miles.toFixed(2)} mi · ${w.runs} ${w.runs===1?'run':'runs'}${w.pace===null?'':' · '+w.pace.toFixed(2)+' min/mi'}</p>`).join('')}</details>`:'<p class="mute">No running workouts imported yet.</p>'}
+    ${reviews?`<p class="mute">${reviews} strength workout associations need review; metrics are withheld until linked.</p>`:''}
+    <p class="mute" style="font-size:11px">Legacy manual run logs stay in backups and are excluded from these trends.</p></div>`;
+}
+
 /* ---------- HISTORY ---------- */
 function vHistory(){
   const X=exById();
-  const items=[...DB.sessions.map(s=>({...s,k:'lift'})),...DB.cardio.map(c=>({...c,k:'run'})),
+  const items=[...DB.sessions.map(s=>({...s,k:'lift'})),...(health?.workouts||[]).filter(w=>w.activity_type==='Running').map(w=>({...w,date:Health.dateKey(w),k:'appleRun'})),
                ...DB.body.map(b=>({...b,k:'body'}))].sort((a,b)=>b.date.localeCompare(a.date));
   if(!items.length)return `<p class="empty">Nothing logged yet.<br>Start a session to fill this in.</p>`;
   return items.slice(0,60).map(s=>`
     <div class="card pad">
       <div class="row between" style="margin-bottom:8px">
         <span class="disp" style="font-size:18px;font-weight:600">${
-          s.k==='run'?'Run':s.k==='body'?'Body':esc(s.type)}</span>
+          s.k==='appleRun'?'Run · Apple Health':s.k==='body'?'Body':esc(s.type)}</span>
         <span class="lbl">${fmt(s.date)}${s.synced===false?'<span class="dot"></span>':''}</span>
       </div>
-      ${s.k==='run'?`<div class="mono" style="font-size:13px">${s.miles} mi · ${s.minutes} min · ${
-          (s.minutes/s.miles).toFixed(2)} min/mi · effort ${s.effort}</div>`
+      ${s.k==='appleRun'?healthWorkoutSummary(s)
        :s.k==='body'?`<div class="mono" style="font-size:13px">${s.weight} lb${
           s.bf?' · '+s.bf+'% bf':''}${s.waist?' · '+s.waist+'" waist':''}</div>`
        :(s.entries||[]).map(e=>`<div style="font-size:13px;margin-bottom:4px">
           <span style="font-weight:500">${esc((X[e.exId]||{}).name||e.exId)}</span>
           <span class="mono mute"> ${e.sets.filter(x=>!x.warmup).map(x=>x.w+'×'+x.r).join('  ')}</span>
         </div>`).join('')}
+      ${s.k==='lift'?healthLiftSummary(s.id):''}
       ${s.notes?`<div class="mute" style="font-size:12px;margin-top:8px;font-style:italic">${esc(s.notes)}</div>`:''}
     </div>`).join('');
 }
@@ -442,6 +469,7 @@ function progressResults(){
     const m=metric(s);
     return `<div class="card pad"><div class="row between wrap"><strong>${esc(s.date)} · ${esc(s.type)}</strong><span class="lbl">${esc(s.status||'completed')}</span></div>
       <p class="mono" style="font-size:12px">${m.sets} working sets · ${m.volume.toLocaleString()} lb volume${isExercise?' · e1RM '+m.e1rm:''}</p>
+      ${healthLiftSummary(s.id)}
       ${s.entries.filter(e=>!isExercise||e.exId===progress.exercise).map(e=>`<details ${isExercise?'open':''}><summary>${esc(X[e.exId]?.name||e.exId)} · ${Ledger.working(e.sets).length} working sets</summary>
         <div class="history-sets mono">${e.sets.map((st,i)=>`<div>${i+1}. ${st.w} × ${st.r} · RPE ${st.rpe??'—'} ${st.warmup?'<span class="warm">WARMUP</span>':''}</div>`).join('')}</div></details>`).join('')}
       ${s.notes?`<p class="mute">${esc(s.notes)}</p>`:''}</div>`;
@@ -461,7 +489,7 @@ function vProgress(){
     const g=(X[e.exId]||{}).group||'Other';
     wk[g]=(wk[g]||0)+e.sets.filter(x=>!x.warmup).reduce((v,x)=>v+x.w*x.r,0)}));
   const maxV=Math.max(1,...Object.values(wk));
-  return `${progressExplorer()}
+  return `${healthRunningProgress()}${progressExplorer()}
   <div class="card pad">
     <div class="lbl" style="margin-bottom:12px">Estimated 1RM — anchor lifts</div>
     ${series.length?series.map(s=>`
@@ -535,13 +563,14 @@ function vData(){
   const s=DB.settings,n=unsyncedCount();
   const totalSets=DB.sessions.reduce((a,x)=>a+x.entries.reduce((b,e)=>b+e.sets.length,0),0);
   return `
-  <p class="mute" style="font-size:11px">App version: 2.4</p>
+  <p class="mute" style="font-size:11px">App version: 3.0 development</p>
   ${cloudPanel()}
+  <div class="card pad"><div class="lbl">Apple Health</div><p style="font-size:13px" id="healthStatus">${esc(health?.status()||'Apple Health setup pending.')}</p><button class="btn" data-a="healthRefresh">Refresh Apple Health</button><p class="mute" style="font-size:12px">Only running and strength summaries appear here. Exporter delivery can be delayed. Other health data remain private in the import archive.</p></div>
   <div class="card pad">
     <div class="lbl" style="margin-bottom:8px">The ledger</div>
     <div class="mono" style="font-size:30px">${totalSets}</div>
     <div class="mute" style="font-size:13px">sets recorded across ${DB.sessions.length} sessions</div>
-    <div class="mute" style="font-size:13px;margin-top:4px">${DB.cardio.length} runs · ${DB.body.length} weigh-ins · ${DB.exercises.length} exercises</div>
+    <div class="mute" style="font-size:13px;margin-top:4px">${DB.cardio.length} legacy run logs (preserved in backups) · ${DB.body.length} weigh-ins · ${DB.exercises.length} exercises</div>
   </div>
   <div class="card pad">
     <div class="lbl" style="margin-bottom:10px">Legacy Google Sheets archive — manual only</div>
@@ -647,7 +676,7 @@ function exportCsv(){
 /* ═══════════════════════════ SHEETS (modals) ═══════════════════════════ */
 function openSheet(kind){
   const el=$('sheet'); el.dataset.kind=kind; el.classList.add('open');
-  el.innerHTML={pick:shPick,cardio:shCardio,body:shBody}[kind]();
+  el.innerHTML={pick:shPick,body:shBody}[kind]();
   if(kind==='pick')el.querySelector('#q')?.focus({preventScroll:true});
 }
 function closeSheet(){NEWEX=null;$('sheet').classList.remove('open');$('sheet').innerHTML=''}
@@ -704,28 +733,6 @@ function shNewEx(){
     deliberately — a handful is the right number.</p>
   </div>`;
 }
-function shCardio(){
-  return `<div style="padding:calc(16px + env(safe-area-inset-top)) 16px 16px;overflow-y:auto">
-    <div class="row between" style="margin-bottom:18px">
-      <span class="disp" style="font-size:18px;font-weight:700">Log a run</span>
-      <button class="mute" style="font-size:24px" data-a="close">×</button></div>
-    <div class="row" style="gap:10px;margin-bottom:14px">
-      <div style="flex:1"><div class="lbl" style="margin-bottom:5px">Miles</div>
-        <div class="step"><button data-a="f" data-t="miles" data-d="-0.25">−</button>
-        <input type="number" inputmode="decimal" id="miles" value="2"><button data-a="f" data-t="miles" data-d="0.25">+</button></div></div>
-      <div style="flex:1"><div class="lbl" style="margin-bottom:5px">Minutes</div>
-        <div class="step"><button data-a="f" data-t="minutes" data-d="-1">−</button>
-        <input type="number" inputmode="decimal" id="minutes" value="18"><button data-a="f" data-t="minutes" data-d="1">+</button></div></div>
-    </div>
-    <div class="lbl" style="margin-bottom:6px">Effort</div>
-    <div class="row" style="gap:5px;margin-bottom:14px" id="effort">
-      ${[4,5,6,7,8,9,10].map(n=>`<button class="chip sm ${n===6?'on':''}" data-a="pickN" data-g="effort" data-n="${n}"
-        style="flex:1;text-align:center;padding:10px 0">${n}</button>`).join('')}</div>
-    <div class="lbl" style="margin-bottom:5px">Avg HR (optional)</div>
-    <input class="field" id="avgHr" type="number" inputmode="numeric" placeholder="from your watch" style="margin-bottom:14px">
-    <textarea class="field" id="cnotes" placeholder="Route, how it felt" style="margin-bottom:16px"></textarea>
-    <button class="btn btn-sig" data-a="saveCardio">Save run</button></div>`;
-}
 function shBody(){
   return `<div style="padding:calc(16px + env(safe-area-inset-top)) 16px 16px;overflow-y:auto">
     <div class="row between" style="margin-bottom:18px">
@@ -751,12 +758,13 @@ document.addEventListener('click',ev=>{
   if(otherTabChanged&& !['backup','csv'].includes(t.dataset.a)){ev.preventDefault();return toast(storageError);}
   const a=t.dataset.a, i=+t.dataset.i, A=DB.active;
   const acts={
+    healthRefresh:async()=>{await health.refresh(true);render()},
     cloudSignIn:async()=>{
       const email=$('cloudEmail').value.trim(),password=$('cloudPassword').value;$('cloudPassword').value='';
-      try{await cloud.signIn(email,password);render();}catch(e){toast(e.message);}
+      try{await cloud.signIn(email,password);await health.refresh(true);render();}catch(e){toast(e.message);}
     },
-    cloudSignOut:async()=>{await cloud.signOut();render()},
-    cloudSync:async()=>{await cloud.sync();render()},
+    cloudSignOut:async()=>{await cloud.signOut();await health.refresh();render()},
+    cloudSync:async()=>{await cloud.sync();await health.refresh(true);render()},
     cloudConflicts:()=>openConflicts(),
     cloudResolve:()=>{
       download(`iron-ledger-before-conflict-${today()}.json`,JSON.stringify(DB,null,2),'application/json');
@@ -794,12 +802,6 @@ document.addEventListener('click',ev=>{
       NEWEX=null;save();closeSheet();render()},
     f:()=>{const el=$(t.dataset.t);el.value=Math.max(0,+(+el.value+ +t.dataset.d).toFixed(2))},
     pickN:()=>{[...$(t.dataset.g).children].forEach(c=>c.classList.remove('on'));t.classList.add('on')},
-    saveCardio:()=>{const mi=+$('miles').value,mn=+$('minutes').value;
-      if(!mi||!mn)return toast('Distance and time are both needed');
-      DB.cardio.push({id:uid('run'),date:today(),miles:mi,minutes:mn,
-        effort:+($('effort').querySelector('.on')?.dataset.n||6),
-        avgHr:+$('avgHr').value||null,notes:$('cnotes').value,synced:false});
-      save();closeSheet();tab='history';render(true);toast('Run logged')},
     saveBody:()=>{DB.body.push({id:uid('bod'),date:today(),weight:+$('weight').value,
         bf:+$('bf').value||null,waist:+$('waist').value||null,synced:false});
       save();closeSheet();tab='history';render(true);toast('Stats logged')},
@@ -862,11 +864,17 @@ try{
     isSeed:(t,r)=>(t==='exercises'?SEED:t==='routines'?SEED_ROUTINES:[]).some(s=>Ledger.equal(s,r)),
     changed:()=>{
       $('hsub').textContent=headerStatus();
+      if(health&&!cloud.busy)health.refresh();
       if($('cloudStatus'))$('cloudStatus').textContent=cloudStatus();
       const editing=document.activeElement?.matches('input,textarea,select');
       if(!cloud.busy&&!DB.active&&!editing&&!$('sheet').classList.contains('open')&&renderedData!==JSON.stringify(Ledger.tables.map(t=>DB[t])))render();
     }});
-  render();cloud.schedule(100);
+  health=new Health.LedgerHealth({cloud,changed:()=>{
+    if($('healthStatus'))$('healthStatus').textContent=health.status();
+    const editing=document.activeElement?.matches('input,textarea,select');
+    if(!health.running&&!DB.active&&!editing&&!$('sheet').classList.contains('open')&&['history','progress'].includes(tab))render();
+  }});
+  render();cloud.schedule(100);health.refresh();
 }catch(e){
   $('view').innerHTML='<div class="card pad">The saved cache could not be opened. It has not been overwritten. <button class="btn" id="recoverCache">Download original cache for recovery</button></div>';
   $('recoverCache').onclick=()=>download('iron-ledger-cache-recovery.json',localStorage.getItem(LS)||'','application/json');
