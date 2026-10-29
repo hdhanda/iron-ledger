@@ -42,11 +42,11 @@
    if(!this.enabled)return 'Apple Health import is awaiting development setup.';
    if(!this.owner())return 'Sign in to view Apple Health workouts.';
    if(this.message)return this.message;
-   if(!this.data.lastAttempt)return 'No exports received yet. Configure Health Auto Export before expecting workouts.';
+   if(!this.data.lastAttempt)return 'No exports received yet. Import an Apple Health export from your Mac before expecting workouts.';
    const pending=this.data.lastAttempt.processing_status!=='completed';
    if(!this.data.lastSuccess)return pending?'An export needs processing or review; no successful import yet.':'No successful import yet.';
-   const stale=Date.now()-Date.parse(this.data.lastSuccess)>48*3600000;
-   return `Last successful import: ${new Date(this.data.lastSuccess).toLocaleString()}.${stale?' Sync may be delayed (over 48 hours).':''}${pending?' Latest export needs processing or review.':''}`;
+   const stale=Date.now()-Date.parse(this.data.lastSuccess)>14*24*3600000;
+   return `Last successful import: ${new Date(this.data.lastSuccess).toLocaleString()}.${stale?' Manual export may be out of date (over 14 days).':''}${pending?' Latest export needs processing or review.':''}`;
   }
  }
  const miles=w=>Number.isFinite(w.distance_m)?w.distance_m/1609.344:null;

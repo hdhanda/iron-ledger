@@ -1,5 +1,6 @@
 // Pure projections of vendor output. The exact request is archived independently.
 export const FAMILIES = ['metrics','workouts','symptoms','ecg','heartRateNotifications','stateOfMind','cycleTracking','medications'];
+export const NATIVE_FAMILIES=['nativeAppleArchive','nativeAppleEvents'];
 export const canonical = x => JSON.stringify(x && typeof x === 'object' ? Array.isArray(x) ? x.map(v=>JSON.parse(canonical(v))) : Object.fromEntries(Object.keys(x).sort().map(k=>[k,JSON.parse(canonical(x[k]))])) : x);
 export async function hash(value) {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
@@ -31,8 +32,8 @@ export function validateEnvelope(payload) {
   if (!object(payload) || !object(payload.data)) throw new Error('invalid_envelope');
   const keys = Object.keys(payload.data);
   if (!keys.length || keys.length > 32) throw new Error('invalid_families');
-  for (const family of FAMILIES) if (family in payload.data && !Array.isArray(payload.data[family])) throw new Error('invalid_family_shape');
-  return {families: keys.filter(k=>FAMILIES.includes(k)), unknown: keys.filter(k=>!FAMILIES.includes(k))};
+  for (const family of [...FAMILIES,'nativeAppleEvents']) if (family in payload.data && !Array.isArray(payload.data[family])) throw new Error('invalid_family_shape');
+  return {families: keys.filter(k=>[...FAMILIES,...NATIVE_FAMILIES].includes(k)), unknown: keys.filter(k=>![...FAMILIES,...NATIVE_FAMILIES].includes(k))};
 }
 export function checkComplexity(value, {maxDepth=32,maxNodes=150000}={}) {
   const queue=[[value,0]];let nodes=0;
@@ -44,8 +45,8 @@ export async function project(payload, context={}) {
   const aggregation=context.aggregation ?? null;
   const observed = (point, metric, units, path, multi=false) => ({metric_name:metric, observed_at:instant(dateOf(point)), end_at:instant(endOf(point)),
     source_timestamp:text(dateOf(point)), source_timezone:offsetOf(dateOf(point)), value_numeric:num(point.qty)??num(point.Avg), unit:text(point.units)??units,
-    source:text(point.source), source_sample_id:text(point.id), aggregation_level:aggregation,
-    is_aggregated:multi || ['Min','Avg','Max'].some(k=>k in point) || (!!aggregation && !/^(none|raw|off)$/i.test(aggregation)) ? true : null,
+    source:text(point.source), source_sample_id:text(point.id), aggregation_level:point.aggregation_level??aggregation,
+    is_aggregated:context.nativeSource&&typeof point.is_aggregated==='boolean'?point.is_aggregated:multi || ['Min','Avg','Max'].some(k=>k in point) || (!!aggregation && !/^(none|raw|off)$/i.test(aggregation)) ? true : null,
     value_jsonb:point, raw_json_path:path});
   const fingerprint = async (scope,row) => hash(canonical([scope,row.source_sample_id ? [row.source,row.source_sample_id] : [row.observed_at,row.end_at,row.source,row.unit,row.aggregation_level,row.is_aggregated,row.value_jsonb]]));
   for (let m=0;m<(payload.data.metrics||[]).length;m++) {
@@ -53,8 +54,8 @@ export async function project(payload, context={}) {
     if(!object(metric)||!text(metric.name)||!Array.isArray(metric.data))throw new Error('invalid_metric');
     for(let p=0;p<metric.data.length;p++){
       const point=metric.data[p];if(!object(point))throw new Error('invalid_observation');
-      const row=observed(point,metric.name,text(metric.units),`/data/metrics/${m}/data/${p}`,(payload.data.metrics.length>1));
-      row.provenance_jsonb={metric:Object.fromEntries(Object.entries(metric).filter(([key])=>key!=='data')),automation_id:context.automationId??null};
+      const row=observed(point,metric.name,text(metric.units),`/data/metrics/${m}/data/${p}`,(!context.nativeSource&&payload.data.metrics.length>1));
+      row.provenance_jsonb={metric:Object.fromEntries(Object.entries(metric).filter(([key])=>key!=='data')),automation_id:context.automationId??null,...(context.nativeSource?{native_source:context.nativeSource,identity_method:point.identity_method??null}:{})};
       row.fingerprint=await fingerprint(metric.name,row);out.observations.push(row);
     }
   }
@@ -70,8 +71,8 @@ export async function project(payload, context={}) {
       distance_m:Number.isFinite(distanceM)?distanceM:null,distance_original:distance,distance_unit:unit,
       active_energy:qty(workout.activeEnergyBurned),energy_unit:text(workout.activeEnergyBurned?.units),
       hr_avg:qty(workout.avgHeartRate)??qty(workout.heartRate?.avg),hr_max:qty(workout.maxHeartRate)??qty(workout.heartRate?.max),
-      source:text(workout.source),route_present:Array.isArray(workout.route)&&workout.route.length>0,
-      raw_json_path:`/data/workouts/${w}`,provenance_jsonb:{export_version:context.exportVersion??null,aggregation,identity:externalId?'vendor_id':'fallback_start_end'}});
+      source:text(workout.source),route_present:(Array.isArray(workout.route)&&workout.route.length>0)||(context.nativeSource&&Array.isArray(workout.native_route_files)&&workout.native_route_files.length>0)||false,
+      raw_json_path:`/data/workouts/${w}`,provenance_jsonb:{export_version:context.exportVersion??null,aggregation,identity:externalId?'vendor_id':'fallback_start_end',...(context.nativeSource?{native_source:context.nativeSource}:{})}});
     // Discover all timestamped arrays recursively; GPS stays exclusively in the raw archive.
     async function walk(node,path,metricPath){
       if(Array.isArray(node)){
@@ -89,11 +90,11 @@ export async function project(payload, context={}) {
     }
     await walk(workout,`/data/workouts/${w}`,'');
   }
-  for(const family of envelope.families.filter(f=>!['metrics','workouts'].includes(f))){
+  for(const family of envelope.families.filter(f=>!['metrics','workouts','nativeAppleArchive'].includes(f))){
     for(let i=0;i<payload.data[family].length;i++){
       const event=payload.data[family][i];if(!object(event))throw new Error('invalid_event');
       // Complex content remains losslessly in Storage; this row is a small lookup index.
-      out.events.push({data_family:family,source_event_id:text(event.id),event_fingerprint:await hash(canonical([family,event.id??event])),
+      out.events.push({data_family:family==='nativeAppleEvents'?'appleHealthXML':family,source_event_id:text(event.id),event_fingerprint:await hash(canonical([family,event.id??event])),
         start_at:instant(dateOf(event)),end_at:instant(endOf(event)),source_timestamp:text(dateOf(event)),source_timezone:offsetOf(dateOf(event)),
         summary_type:text(event.type)??text(event.name)??text(event.classification)??family,
         summary_jsonb:compactEvent(event),raw_json_path:`/data/${pointer(family)}/${i}`});

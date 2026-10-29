@@ -1,4 +1,5 @@
 import {hash,validateEnvelope,checkComplexity,project} from './parser.mjs';
+import {validateNative} from './native.mjs';
 export const MAX_BYTES=2*1024*1024;
 const json=(status,body)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
 async function readBounded(req){
@@ -22,9 +23,9 @@ export function createHandler({ownerId,tokenHashes,resolveOwner,repository,now=(
     catch{return json(503,{error:'authentication_unavailable'});}
     if(!validOwner(requestOwner))return json(401,{error:'unauthorized'});
     if(req.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')return json(415,{error:'json_required'});
-    let bytes,payload,envelope;
-    try{bytes=await readBounded(req);payload=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));checkComplexity(payload);envelope=validateEnvelope(payload);}
-    catch(e){return json(e.message==='payload_size'?413:400,{error:['payload_size','payload_complexity','invalid_envelope','invalid_families','invalid_family_shape'].includes(e.message)?e.message:'invalid_json'});}
+    let bytes,payload,envelope,native;
+    try{bytes=await readBounded(req);payload=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));checkComplexity(payload);envelope=validateEnvelope(payload);native=await validateNative(payload);}
+    catch(e){return json(e.message==='payload_size'?413:400,{error:['payload_size','payload_complexity','invalid_envelope','invalid_families','invalid_family_shape','invalid_native_export'].includes(e.message)?e.message:'invalid_json'});}
     const metadata={automationId:req.headers.get('automation-id'),aggregation:req.headers.get('automation-aggregation'),exportVersion:req.headers.get('export-version'),
       vendorSessionId:req.headers.get('session-id'),exportPeriod:req.headers.get('automation-period')};
     if(Object.values(metadata).some(v=>v&&v.length>200))return json(400,{error:'invalid_metadata'});
@@ -42,11 +43,13 @@ export function createHandler({ownerId,tokenHashes,resolveOwner,repository,now=(
         await repository.archive(path,bytes,checksum);
         batch=await repository.register({user_id:requestOwner,payload_sha256:checksum,storage_path:path,bytes:bytes.length,
           data_families:[...envelope.families,...envelope.unknown],automation_id:metadata.automationId,vendor_session_id:metadata.vendorSessionId,
-          export_version:metadata.exportVersion,aggregation_info:{level:metadata.aggregation,period:metadata.exportPeriod},processing_status:'accepted'});
+          export_version:metadata.exportVersion,aggregation_info:{level:metadata.aggregation,period:metadata.exportPeriod,...native.info,...(native.source?{native_kind:'projection',native_source:native.source}:{})},processing_status:'accepted'});
       }
     }catch{return json(503,{error:'durable_acceptance_failed'});}
     try{
-      const rows=await project(payload,metadata);
+      if(native.archive?.kind==='manifest')await repository.verifyNativeManifest(requestOwner,native.archive);
+      if(native.source)await repository.verifyNativeSource(requestOwner,native.source);
+      const rows=await project(payload,{...metadata,nativeSource:native.source});
       const result=await repository.commit(batch.id,requestOwner,rows);
       return json(200,{batch_id:batch.id,status:result.status,counts:result.counts});
     }catch{

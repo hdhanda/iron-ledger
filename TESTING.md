@@ -66,3 +66,12 @@ Use a separate HTTPS preview origin and its **Iron Ledger Preview** icon. Keep t
 ## Apple Health development release
 
 See [docs/APPLE_HEALTH.md](docs/APPLE_HEALTH.md) for the isolated health SQL/ingest/client checks and remaining hosted/device acceptance gates. The browser suite now verifies imported running summaries and legacy cardio backup preservation instead of manual run entry. Existing core/cloud/SQL and migration checks still apply.
+
+## Native weekly Apple Health imports
+
+```sh
+python3 tests/apple_health_test.py
+node --test tests/apple-native.test.cjs
+```
+
+These synthetic checks cover byte-identical source restoration, unknown/nested XML content, new numeric and categorical metrics, GPX references, deterministic preparation, Finder metadata, device-pointer normalization, weekly replay/change detection, manifest dependencies, chunk tamper rejection, owner-scoped lookups and local capacity refusal. Actual export staging is private and never included in Git. See docs/NATIVE_APPLE_HEALTH.md for manual exports, transfer scopes, resumability and capacity review.
