@@ -1,4 +1,6 @@
-# Native ChatGPT Health: database foundation
+# Native ChatGPT Health: historical database foundation
+
+**Current writer contract:** use [CHATGPT_HEALTH_EXECUTION_RUNBOOK.md](CHATGPT_HEALTH_EXECUTION_RUNBOOK.md). The deployed summary-only revision stores raw points in private Storage and writes only workout/derived summaries; it preserves existing observations, links and their guards. The sample-retaining database design and direct-writer details below document historical V1 behavior, not instructions for new summary-only imports. The summary-only migration/worker passed local and live import/retry/replay checks after owner-approved deployment.
 
 This supersedes the broad XML/vendor collection scope for the current experiment. The native XML importer remains available separately; do not run its broad historical upload for this V1.
 

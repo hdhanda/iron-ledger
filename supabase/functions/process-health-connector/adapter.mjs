@@ -1,5 +1,6 @@
 import {canonical,hash} from '../import-health/parser.mjs';
 export const VERSION='chatgpt-health-v1';
+const SUMMARY_REVISION='summary-only-v1';
 const B=new Set(['stepCount','distanceWalkingRunning','activeEnergyBurned','basalEnergyBurned','flightsClimbed']);
 const GAIT=new Set(['walkingSpeed','walkingStepLength','walkingAsymmetryPercentage','walkingDoubleSupportPercentage']);
 const OPTIONAL=new Set(['environmentalAudioExposure','headphoneAudioExposure']);
@@ -98,7 +99,7 @@ function derive(w,points,c){
  }
  return out;
 }
-export async function projectConnector(payload,manifest,config,owner,context={workouts:[],observations:[]}){
+export async function projectConnector(payload,manifest,config,owner,context={workouts:[]}){
  const {a,b}=validateManifest(payload,manifest);
  if(config.algorithm_version!==VERSION)fail('unsupported_algorithm_version');
  const cutoff=cutoffTime(config);
@@ -109,7 +110,7 @@ export async function projectConnector(payload,manifest,config,owner,context={wo
  const workouts=new Map();
  for(const old of context.workouts??[]){if(old.provenance_jsonb?.connector!=='chatgpt_health_native')continue;
   workouts.set(old.workout_key,{...old,start:Date.parse(old.start_at),end:Date.parse(old.end_at)});}
- const incoming=new Map();
+ const previous=new Map(workouts),incoming=new Map();
  for(let i=0;i<payload.workout.length;i++){
   const p=payload.workout[i];validatePoint(p,'workout');
   if(p.kind!=='workout'||excluded(p)||!allow.has(p.source_bundle_identifier)||p.start_time_ms<cutoff||p.start_time_ms<a||p.start_time_ms>=b)fail('workout_scope_or_source');
@@ -125,49 +126,42 @@ export async function projectConnector(payload,manifest,config,owner,context={wo
     source_bundle_identifier:p.source_bundle_identifier,raw_activity:p.activity,raw_workout:p,record_fingerprint:fp,extracted_at:manifest.extracted_at??null,extraction_time_verified:manifest.extraction_time_verified===true,route_availability:'not_exposed_by_connector'}};
   incoming.set(key,w);workouts.set(key,w);
  }
- const all=[...workouts.values()],observations=new Map(),identities=new Map();
- for(const old of context.observations??[]){if(old.provenance_jsonb?.connector==='chatgpt_health_native'&&!old.provenance_jsonb.superseded_by){observations.set(old.fingerprint,old);identities.set(old.provenance_jsonb.source_identity_key,old);}}
- const newRows=new Map(),superseded=[];
+ // Deduplicate exact raw points in memory; never build observation database rows.
+ const all=[...workouts.values()],byWorkout=new Map([...incoming.keys()].map(k=>[k,new Map()]));
  for(const [metric,rows]of Object.entries(payload)){
   if(metric==='workout')continue;
-  for(let i=0;i<rows.length;i++){
-   const p=rows[i];counts.observations_seen++;validatePoint(p,metric);
+  for(const p of rows){
+   counts.observations_seen++;validatePoint(p,metric);
    if(p.kind!=='quantity'||!finite(p.value))fail('invalid_quantity_value');
    if(excluded(p)){reject('excluded_source');continue;}
    if(!enabled.has(metric)){reject('metric_not_enabled');continue;}
    const unit=manifest.units[metric];if(typeof unit!=='string'||!unit.trim()||unit.length>100)fail('missing_metric_unit');
    if(metric==='heartRate'&&!['count/min','bpm'].includes(unit))fail('unsupported_heart_rate_unit');
    const coarse=B.has(metric)||(manifest.aggregation?.[metric]?.bucket_minutes??0)>=60;
-   if(coarse&&!config.include_coarse_buckets){reject('coarse_disabled');continue;}
+   if(coarse){reject('coarse_not_summarized');continue;}
    if(OPTIONAL.has(metric)&&!config.include_optional_environment){reject('optional_environment_disabled');continue;}
    const assoc=association(p,all,config);
-   if(!assoc.workout&&assoc.reason==='outside_workout'){reject('outside_workout');continue;}
-   if(GAIT.has(metric)&&assoc.workout?.activity_type!=='Walking'){reject('gait_outside_walking');continue;}
-   const intervalSummary=metric==='walkingHeartRateAverage'||metric==='restingHeartRate';
-   const resolution=coarse?'hourly':manifest.aggregation?.[metric]?.level??(intervalSummary?'interval_summary':'native_sample');
-   const identity=await hash(canonical([owner,metric,p.start_time_ms,p.end_time_ms,p.source_bundle_identifier,p.source_name,unit,resolution]));
-   const fp=await hash(canonical([identity,p]));const prior=identities.get(identity);
-   if(prior&&prior.fingerprint!==fp){changed(prior.provenance_jsonb,fp,manifest);superseded.push({fingerprint:prior.fingerprint,replacement:fp});observations.delete(prior.fingerprint);}
-   const row={fingerprint:fp,metric_name:metric,observed_at:iso(p.start_time_ms),end_at:iso(p.end_time_ms),source_timestamp:p.start_time_local,
-    source_timezone:p.start_time_local.match(/(Z|[+-]\d\d:\d\d)$/)[0],value_numeric:p.value,unit,source:p.source_name,source_sample_id:null,
-    aggregation_level:resolution,is_aggregated:coarse||intervalSummary||resolution!=='native_sample',value_jsonb:p,raw_json_path:`/${metric}/${i}`,
-    provenance_jsonb:{connector:'chatgpt_health_native',adapter_version:VERSION,source_identity_key:identity,record_fingerprint:fp,source_bundle_identifier:p.source_bundle_identifier,
-     association:coarse?'coarse_unattributable':assoc.kind??assoc.reason,timestamp_semantics:manifest.timestamp_semantics??null,unit_origin:manifest.unit_origin??'connector_summary',
-     extracted_at:manifest.extracted_at??null,extraction_time_verified:manifest.extraction_time_verified===true}};
-   identities.set(identity,row);observations.set(fp,row);newRows.set(fp,row);
+   if(!assoc.workout){reject(assoc.reason);continue;}
+   if(GAIT.has(metric)&&assoc.workout.activity_type!=='Walking'){reject('gait_outside_walking');continue;}
+   const samples=byWorkout.get(assoc.workout.workout_key);
+   if(samples)samples.set(canonical([p,unit]),{point:p,kind:assoc.kind,unit});
   }
  }
- const links=[],byWorkout=new Map(all.map(w=>[w.workout_key,[]]));
- for(const row of observations.values()){
-  if(row.is_aggregated&&B.has(row.metric_name)||row.aggregation_level==='hourly')continue;
-  const assoc=association(row.value_jsonb,all,config);if(!assoc.workout)continue;
-  if(GAIT.has(row.metric_name)&&assoc.workout.activity_type!=='Walking')continue;
-  if(OPTIONAL.has(row.metric_name)&&!config.include_optional_environment)continue;
-  links.push({workout_key:assoc.workout.workout_key,fingerprint:row.fingerprint,association:assoc.kind,quality_flags:assoc.kind==='overlaps_workout'?['boundary_overlap']:[]});
-  byWorkout.get(assoc.workout.workout_key).push({point:row.value_jsonb,kind:assoc.kind,unit:row.unit});
+ // Refresh only supplied workouts, using only the supplied raw points. A neighboring
+ // context workout must never lose its summary merely because its samples were not fetched.
+ const derived=[];
+ for(const w of incoming.values()){
+  const points=[...byWorkout.get(w.workout_key).values()],d=derive(w,points,config);
+  const inputHash=await hash(canonical(points.map(p=>canonical(p)).sort()));
+  changed(previous.get(w.workout_key)?.provenance_jsonb.summary_input,inputHash,manifest);
+  w.provenance_jsonb.summary_input={record_fingerprint:inputHash,extracted_at:manifest.extracted_at??null,
+   extraction_time_verified:manifest.extraction_time_verified===true,raw_payload_sha256:manifest.payload_sha256??null};
+  d.derived_extra={...d.derived_extra,projection_mode:'summary_only',summary_revision:SUMMARY_REVISION,
+   input_sha256:inputHash,raw_payload_sha256:manifest.payload_sha256??null};
+  if(manifest.unit_origin&&manifest.unit_origin!=='connector_summary')d.quality_flags.push('units_from_reference_manifest');
+  derived.push(d);
  }
- const derived=all.map(w=>derive(w,byWorkout.get(w.workout_key),config));
- if(manifest.unit_origin&&manifest.unit_origin!=='connector_summary')for(const d of derived)d.quality_flags.push('units_from_reference_manifest');
- return {workouts:[...incoming.values()].map(({start,end,...w})=>w),observations:[...newRows.values()],links,derived,superseded,recompute_keys:all.map(w=>w.workout_key),
+ return {projection_mode:'summary_only',workouts:[...incoming.values()].map(({start,end,...w})=>w),
+  observations:[],links:[],superseded:[],derived,recompute_keys:[...incoming.keys()],
   events:[],series:[],warnings:[],unknown_families:[],counts};
 }

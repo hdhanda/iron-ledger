@@ -3,13 +3,14 @@ const fs=require('node:fs'),path=require('node:path');
 const {PGlite}=require(process.env.PGLITE_MODULE||'@electric-sql/pglite');
 const ROOT=path.join(__dirname,'..');
 const OWNER='11111111-1111-1111-1111-111111111111';
-async function createLocalBridge(config,{archiveDirectory}={}){
+async function createLocalBridge(config,{archiveDirectory,owner=OWNER}={}){
+ if(!/^[0-9a-f-]{36}$/.test(owner))throw Error('invalid_local_owner');
  const pg=new PGlite();
  await pg.exec(`create role anon;create role authenticated;create role service_role bypassrls;
   create schema auth;create table auth.users(id uuid primary key);
   create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
   grant usage on schema auth,public to authenticated,anon,service_role;grant execute on function auth.uid() to authenticated,anon,service_role;
-  insert into auth.users values('${OWNER}'),('22222222-2222-2222-2222-222222222222');
+  insert into auth.users values('${owner}'),('22222222-2222-2222-2222-222222222222');
   create schema storage;create table storage.objects(id text,bucket_id text,name text,metadata jsonb);
   grant usage on schema storage to service_role;grant select on storage.objects to service_role;
   create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
@@ -20,10 +21,11 @@ async function createLocalBridge(config,{archiveDirectory}={}){
  for(const filename of ['supabase.sql','supabase/migrations/20261015051442_apple_health_import.sql','supabase/migrations/20261015051937_health_import_credentials.sql','supabase/migrations/20261029040928_chatgpt_health_connector_v1.sql','supabase/migrations/20261029045933_health_connector_sql_bridge.sql']){
   let sql=fs.readFileSync(path.join(ROOT,filename),'utf8');sql=sql.replace('create extension if not exists pg_net;','-- pg_net is mocked in this isolated engine.');await pg.exec(sql);
  }
+ await pg.exec(fs.readFileSync(path.join(ROOT,'supabase/migrations/20261029064219_health_connector_summary_only.sql'),'utf8'));
  // Supabase's live default grants allow the existing reconciler to read sessions.
  // The standalone engine has no Supabase default privileges; emulate that read only.
  await pg.exec('grant select on public.sessions to service_role');
- await pg.query('insert into public.health_sync_config(user_id,source_policy) values($1,$2::jsonb)',[OWNER,JSON.stringify(config.source_policy)]);
+ await pg.query('insert into public.health_sync_config(user_id,source_policy) values($1,$2::jsonb)',[owner,JSON.stringify(config.source_policy)]);
  const objects=new Map(),{hash}=await import(path.join(ROOT,'supabase/functions/import-health/parser.mjs'));
  const errors=[];
  const rpc=async(name,args)=>{
@@ -46,7 +48,7 @@ async function createLocalBridge(config,{archiveDirectory}={}){
   const chunks=[];let chunk='',size=0;
   for(const ch of text){const bytes=Buffer.byteLength(ch);if(size+bytes>24000){chunks.push(chunk);chunk='';size=0;}chunk+=ch;size+=bytes;}if(chunk)chunks.push(chunk);
   const full={...manifest,schema_version:1,payload_sha256:await hash(text),payload_bytes:Buffer.byteLength(text),part_count:chunks.length};
-  const begin=(await pg.query('select health_private.connector_begin($1,$2::jsonb,$3) result',[OWNER,JSON.stringify(full),requestKey])).rows[0].result;
+  const begin=(await pg.query('select health_private.connector_begin($1,$2::jsonb,$3) result',[owner,JSON.stringify(full),requestKey])).rows[0].result;
   if(begin.state==='completed')return begin;
   for(const [i,part]of chunks.entries())await pg.query('select health_private.connector_append($1,$2,$3)',[begin.job_id,i,part]);
   await pg.query('select health_private.connector_finish($1)',[begin.job_id]);
@@ -54,6 +56,6 @@ async function createLocalBridge(config,{archiveDirectory}={}){
   const response=await worker(new Request('https://local.invalid/',{method:'POST',headers:{'x-health-job-token':queue.headers['x-health-job-token']},body:JSON.stringify(queue.body)}));
   const output=await response.json();return {job_id:begin.job_id,response_status:response.status,...output};
  }
- return {pg,repository,objects,worker,submit,owner:OWNER,errors};
+ return {pg,repository,objects,worker,submit,owner,errors};
 }
 module.exports={createLocalBridge,OWNER};

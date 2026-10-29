@@ -30,7 +30,7 @@ export function createConnectorWorker({repository,defer}){
     await repository.verifyArchive(path,m.payload_sha256);
     await repository.verifyArchive(manifestPath,claim.manifest_sha256);
     const batch=await repository.register({user_id:claim.owner,payload_sha256:m.payload_sha256,storage_path:path,bytes:raw.length,
-     data_families:Object.keys(m.record_counts),export_version:'chatgpt-health-v1',aggregation_info:{connector:'chatgpt_health_native',manifest_path:manifestPath},processing_status:'accepted'});
+     data_families:Object.keys(m.record_counts),export_version:'chatgpt-health-v1',aggregation_info:{connector:'chatgpt_health_native',manifest_path:manifestPath,projection_mode:'summary_only'},processing_status:'accepted'});
     const result=await repository.rpc('health_connector_commit',{p_job:input.job_id,p_lease:claim.lease,p_batch:batch.id,p_rows:rows});
     if(result.status!=='completed')throw Error('commit_not_complete');
     return result;
